@@ -1,3 +1,0 @@
-# Keep the managed backup directory without tracking backup contents.
-*
-!.gitignore
