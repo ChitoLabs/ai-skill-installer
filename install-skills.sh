@@ -19,17 +19,25 @@ CLAUDE_TARGET_ORIGIN=""
 AGY_TARGET_ORIGIN=""
 BACKUP_ROOT_INPUT="${SKILL_BACKUP_DIR:-$SCRIPT_DIR/BKOld}"
 LOCK_PATH_INPUT="${SKILL_INSTALLER_LOCK_FILE:-$SCRIPT_DIR/.install-skills.lock}"
+STATE_PATH_INPUT="${SKILL_INSTALLER_STATE_FILE:-$SCRIPT_DIR/.installed-skills.state}"
 TEST_FAILPOINT="${SKILL_INSTALLER_TEST_FAILPOINT:-}"
 
 ACTION=""
 RESTORE_ID=""
 DRY_RUN=0
+FORCE=0
 STAGING_DIR=""
 TEMPORARY_ROOT=""
 SNAPSHOT_TEMP=""
 SOURCE_SKILLS_DIR=""
 SOURCE_COMMIT="unknown"
 SOURCE_SKILL_COUNT=0
+INSTALLED_COMMIT=""
+INSTALLED_REPOSITORY=""
+INSTALLED_BRANCH=""
+INSTALLED_SKILL_COUNT=""
+INSTALLED_UTC=""
+REMOTE_COMMIT="unknown"
 LAST_SKILL_COUNT=0
 LAST_SNAPSHOT_ID=""
 LOCK_FD=""
@@ -171,8 +179,12 @@ usage() {
 Usage: install-skills.sh COMMAND [ARGUMENT]
 
 Commands:
-  install              Install/update all three skill targets (noninteractive).
+  install [--force]      Install/update all three skill targets (noninteractive).
+                         Without --force, a repeated install of the same source
+                         commit is a no-op that reports "already up to date".
   dry-run, --dry-run   Clone and validate without changing targets or backups.
+  status, check         Compare the installed skill-pack version against the
+                         remote source and summarize new/modified/removed skills.
   list                 List managed backup snapshots.
   restore [BACKUP_ID]  Restore a snapshot; ID is required without a TTY.
   menu                 Open the interactive terminal menu.
@@ -195,13 +207,23 @@ parse_arguments() {
 
   case "$1" in
     install)
-      (($# == 1)) || fail "install does not accept arguments"
-      ACTION="install"
+      if (($# == 1)); then
+        ACTION="install"
+      elif (($# == 2)) && [[ "$2" == "--force" ]]; then
+        ACTION="install"
+        FORCE=1
+      else
+        fail "install accepts only an optional --force argument"
+      fi
       ;;
     dry-run|--dry-run)
       (($# == 1)) || fail "$1 does not accept arguments"
       ACTION="install"
       DRY_RUN=1
+      ;;
+    status|check)
+      (($# == 1)) || fail "$1 does not accept arguments"
+      ACTION="status"
       ;;
     list)
       (($# == 1)) || fail "list does not accept arguments"
@@ -228,7 +250,7 @@ parse_arguments() {
 
 check_dependencies() {
   local command_name
-  local -a required_commands=(git mktemp cp mv rm mkdir date realpath diff find)
+  local -a required_commands=(git mktemp cp mv rm mkdir date realpath diff find grep cut sort head)
 
   for command_name in "${required_commands[@]}"; do
     command -v "$command_name" >/dev/null 2>&1 || fail "Required command not found: $command_name"
@@ -364,6 +386,29 @@ assert_safe_lock_path() {
   return 0
 }
 
+assert_safe_state_path() {
+  local protected_path
+  local -a protected_paths=(
+    "$OPENCODE_TARGET"
+    "$CLAUDE_TARGET"
+    "$AGY_TARGET"
+    "$BACKUP_ROOT"
+    "$(realpath -m -- "$HOME/.config/opencode/commands")"
+    "$(realpath -m -- "$HOME/.engram")"
+    "$(realpath -m -- "$HOME/.agents/skills")"
+    "$(realpath -m -- "$HOME/.gemini/antigravity-cli/skills")"
+  )
+
+  assert_no_protected_codegraph "$STATE_PATH"
+  if [[ -e "$STATE_PATH" && ! -f "$STATE_PATH" ]]; then
+    fail "Installer state path is not a regular file: $STATE_PATH"
+  fi
+  for protected_path in "${protected_paths[@]}"; do
+    paths_overlap "$STATE_PATH" "$protected_path" && fail "Installer state overlaps protected path: $protected_path"
+  done
+  return 0
+}
+
 validate_configuration() {
   [[ -n "$REPOSITORY_URL" ]] || fail "SKILL_PACK_REPOSITORY_URL cannot be empty"
   [[ "$REPOSITORY_URL" != -* ]] || fail "Repository URL cannot begin with a dash"
@@ -372,11 +417,13 @@ validate_configuration() {
 
   resolve_skill_targets
   assert_no_protected_codegraph "$(expand_home "$LOCK_PATH_INPUT")"
+  assert_no_protected_codegraph "$(expand_home "$STATE_PATH_INPUT")"
   OPENCODE_TARGET="$(normalize_path "$OPENCODE_TARGET_INPUT" "OpenCode target")"
   CLAUDE_TARGET="$(normalize_path "$CLAUDE_TARGET_INPUT" "Claude target")"
   AGY_TARGET="$(normalize_path "$AGY_TARGET_INPUT" "AGY target")"
   BACKUP_ROOT="$(normalize_path "$BACKUP_ROOT_INPUT" "Backup root")"
   LOCK_PATH="$(normalize_path "$LOCK_PATH_INPUT" "Installer lock path")"
+  STATE_PATH="$(normalize_path "$STATE_PATH_INPUT" "Installer state path")"
 
   assert_safe_target "$OPENCODE_TARGET"
   assert_safe_target "$CLAUDE_TARGET"
@@ -386,6 +433,7 @@ validate_configuration() {
   paths_overlap "$CLAUDE_TARGET" "$AGY_TARGET" && fail "All skill targets must be distinct and non-overlapping"
   assert_safe_backup_root
   assert_safe_lock_path
+  assert_safe_state_path
 
   case "$TEST_FAILPOINT" in
     ""|after-opencode-install|after-claude-install|after-agy-install|after-opencode-restore|after-claude-restore|after-agy-restore|quarantine-fidelity-install|quarantine-fidelity-restore|quarantine-cleanup|post-commit-report) ;;
@@ -457,6 +505,201 @@ clone_repository() {
   SOURCE_SKILLS_DIR="$STAGING_DIR/repository/skills"
   SOURCE_COMMIT="$(git_without_user_configuration -C "$STAGING_DIR/repository" rev-parse HEAD)"
   [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || fail "Unexpected source commit: $SOURCE_COMMIT"
+}
+
+load_installed_state() {
+  local line key value
+  local -A seen=()
+
+  INSTALLED_COMMIT=""
+  INSTALLED_REPOSITORY=""
+  INSTALLED_BRANCH=""
+  INSTALLED_SKILL_COUNT=""
+  INSTALLED_UTC=""
+
+  [[ -f "$STATE_PATH" && ! -L "$STATE_PATH" ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" == *=* ]] || return 1
+    key="${line%%=*}"
+    value="${line#*=}"
+    case "$key" in
+      repository_url|branch|source_commit|skill_count|installed_utc) ;;
+      *) return 1 ;;
+    esac
+    [[ -z "${seen[$key]+x}" ]] || return 1
+    seen["$key"]=1
+    case "$key" in
+      repository_url) INSTALLED_REPOSITORY="$value" ;;
+      branch) INSTALLED_BRANCH="$value" ;;
+      source_commit) INSTALLED_COMMIT="$value" ;;
+      skill_count) INSTALLED_SKILL_COUNT="$value" ;;
+      installed_utc) INSTALLED_UTC="$value" ;;
+    esac
+  done <"$STATE_PATH"
+
+  [[ -n "${seen[repository_url]+x}" && -n "${seen[branch]+x}" && -n "${seen[source_commit]+x}" ]] || return 1
+  [[ "$INSTALLED_COMMIT" =~ ^[0-9a-f]{40}$ ]] || return 1
+  [[ -n "$INSTALLED_REPOSITORY" && -n "$INSTALLED_BRANCH" ]] || return 1
+  return 0
+}
+
+find_latest_install_commit() {
+  local snapshot_path snapshot_id latest_id=""
+  local commit=""
+
+  [[ -d "$BACKUP_ROOT" ]] || return 1
+  shopt -s nullglob
+  for snapshot_path in "$BACKUP_ROOT"/*; do
+    [[ -d "$snapshot_path" && ! -L "$snapshot_path" ]] || continue
+    snapshot_id="${snapshot_path##*/}"
+    is_safe_backup_id "$snapshot_id" || continue
+    # Prefer the newest install snapshot; IDs sort chronologically.
+    if [[ ! -f "$snapshot_path/metadata" || -L "$snapshot_path/metadata" ]]; then
+      continue
+    fi
+    if grep -q '^reason=install$' "$snapshot_path/metadata" 2>/dev/null; then
+      if [[ -z "$latest_id" || "$snapshot_id" > "$latest_id" ]]; then
+        latest_id="$snapshot_id"
+      fi
+    fi
+  done
+  shopt -u nullglob
+  [[ -n "$latest_id" ]] || return 1
+  commit="$(grep '^source_commit=' "$BACKUP_ROOT/$latest_id/metadata" 2>/dev/null | cut -d= -f2-)"
+  [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || return 1
+  printf '%s\n' "$commit"
+}
+
+resolve_installed_commit() {
+  if load_installed_state; then
+    return 0
+  fi
+  INSTALLED_COMMIT=""
+  INSTALLED_REPOSITORY=""
+  INSTALLED_BRANCH=""
+  INSTALLED_SKILL_COUNT=""
+  INSTALLED_UTC=""
+  if INSTALLED_COMMIT="$(find_latest_install_commit)"; then
+    return 0
+  fi
+  INSTALLED_COMMIT=""
+  return 1
+}
+
+get_remote_head() {
+  local remote_output
+
+  remote_output="$(git_without_user_configuration ls-remote "$REPOSITORY_URL" "$BRANCH" 2>/dev/null)" || \
+    fail "Could not reach source repository to check for updates: $REPOSITORY_URL (branch: $BRANCH)"
+  REMOTE_COMMIT="${remote_output%%[[:space:]]*}"
+  [[ "$REMOTE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || \
+    fail "Could not resolve remote HEAD for branch '$BRANCH' in $REPOSITORY_URL"
+}
+
+list_skill_names() {
+  local root="$1"
+  local manifest
+  local -a names=()
+
+  [[ -d "$root" ]] || return 0
+  shopt -s nullglob
+  for manifest in "$root"/*/SKILL.md; do
+    [[ -f "$manifest" && ! -L "$manifest" ]] || continue
+    names+=("$(basename "$(dirname "$manifest")")")
+  done
+  shopt -u nullglob
+  ((${#names[@]} == 0)) || printf '%s\n' "${names[@]}" | LC_ALL=C sort -u
+}
+
+reference_target() {
+  if [[ -d "$OPENCODE_TARGET" && ! -L "$OPENCODE_TARGET" ]]; then
+    printf '%s\n' "$OPENCODE_TARGET"
+  elif [[ -d "$CLAUDE_TARGET" && ! -L "$CLAUDE_TARGET" ]]; then
+    printf '%s\n' "$CLAUDE_TARGET"
+  elif [[ -d "$AGY_TARGET" && ! -L "$AGY_TARGET" ]]; then
+    printf '%s\n' "$AGY_TARGET"
+  fi
+}
+
+summarize_skill_changes() {
+  local old_root="$1"
+  local new_root="$2"
+  local old_list new_list
+  local name
+  local -a added=() removed=() modified=()
+  local -A old_names=() new_names=()
+
+  old_list="$(list_skill_names "$old_root")"
+  new_list="$(list_skill_names "$new_root")"
+  while IFS= read -r name || [[ -n "$name" ]]; do
+    [[ -n "$name" ]] || continue
+    old_names["$name"]=1
+  done <<<"$old_list"
+  while IFS= read -r name || [[ -n "$name" ]]; do
+    [[ -n "$name" ]] || continue
+    new_names["$name"]=1
+  done <<<"$new_list"
+
+  for name in "${!new_names[@]}"; do
+    [[ -n "${old_names[$name]+x}" ]] || added+=("$name")
+  done
+  for name in "${!old_names[@]}"; do
+    [[ -n "${new_names[$name]+x}" ]] || removed+=("$name")
+  done
+  for name in "${!new_names[@]}"; do
+    if [[ -n "${old_names[$name]+x}" ]]; then
+      if ! diff -qr --no-dereference -- "$old_root/$name" "$new_root/$name" >/dev/null 2>&1; then
+        modified+=("$name")
+      fi
+    fi
+  done
+
+  local added_count="${#added[@]}"
+  local removed_count="${#removed[@]}"
+  local modified_count="${#modified[@]}"
+  log "Skills: +$added_count new / ~$modified_count modified / -$removed_count removed"
+  if ((added_count > 0)); then
+    log "New skills:"
+    printf '%s\n' "${added[@]}" | LC_ALL=C sort -u | head -20 | while IFS= read -r name; do log "  + $name"; done
+  fi
+  if ((modified_count > 0)); then
+    log "Modified skills:"
+    printf '%s\n' "${modified[@]}" | LC_ALL=C sort -u | head -20 | while IFS= read -r name; do log "  ~ $name"; done
+  fi
+  if ((removed_count > 0)); then
+    log "Removed skills:"
+    printf '%s\n' "${removed[@]}" | LC_ALL=C sort -u | head -20 | while IFS= read -r name; do log "  - $name"; done
+  fi
+  if ((added_count == 0 && removed_count == 0 && modified_count == 0)); then
+    log "No skill content differences detected."
+  fi
+}
+
+targets_match_source() {
+  local reference="$1"
+
+  [[ -n "$reference" && -d "$reference" ]] || return 1
+  diff -qr --no-dereference -- "$SOURCE_SKILLS_DIR" "$reference" >/dev/null 2>&1
+}
+
+write_installed_state() {
+  local commit="$1"
+  local skill_count="$2"
+  local state_parent="${STATE_PATH%/*}"
+  local state_temp
+
+  [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || fail "Cannot record invalid installed commit"
+  mkdir -p -- "$state_parent"
+  [[ ! -L "$STATE_PATH" ]] || fail "Installer state path became a symbolic link: $STATE_PATH"
+  state_temp="$(mktemp "$state_parent/.installed-skills-state.XXXXXX")"
+  printf '%s\n' \
+    "repository_url=$REPOSITORY_URL" \
+    "branch=$BRANCH" \
+    "source_commit=$commit" \
+    "skill_count=$skill_count" \
+    "installed_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    >"$state_temp"
+  mv -- "$state_temp" "$STATE_PATH"
 }
 
 count_skill_manifests() {
@@ -1105,7 +1348,68 @@ list_backups() {
   ((found > 0)) || log "No valid backups found."
 }
 
+run_status() {
+  local reference=""
+
+  get_remote_head
+  if ! resolve_installed_commit; then
+    log "Installed version: none (no previous install recorded)"
+    log "Remote version: $REMOTE_COMMIT (branch: $BRANCH)"
+    log "Run './install-skills.sh install' to install the current skill-pack."
+    return 0
+  fi
+
+  log "Installed version: $INSTALLED_COMMIT"
+  if [[ -n "$INSTALLED_REPOSITORY" ]]; then
+    log "Installed source: $INSTALLED_REPOSITORY (branch: ${INSTALLED_BRANCH:-unknown})"
+  fi
+  if [[ -n "$INSTALLED_SKILL_COUNT" ]]; then
+    log "Installed skills: $INSTALLED_SKILL_COUNT"
+  fi
+  log "Remote version: $REMOTE_COMMIT (branch: $BRANCH)"
+
+  if [[ -n "$INSTALLED_REPOSITORY" && "$INSTALLED_REPOSITORY" != "$REPOSITORY_URL" ]]; then
+    warn "Configured source differs from the last install; comparison is by commit only."
+  fi
+  if [[ -n "$INSTALLED_BRANCH" && "$INSTALLED_BRANCH" != "$BRANCH" ]]; then
+    warn "Configured branch differs from the last install; comparison is by commit only."
+  fi
+
+  if [[ "$REMOTE_COMMIT" == "$INSTALLED_COMMIT" ]]; then
+    reference="$(reference_target)"
+    if [[ -n "$reference" ]]; then
+      log "Skill diff against $reference:"
+      clone_repository >/dev/null
+      validate_skill_tree "$SOURCE_SKILLS_DIR"
+      summarize_skill_changes "$reference" "$SOURCE_SKILLS_DIR"
+      if targets_match_source "$reference"; then
+        success "Already up to date: installed version matches the remote version."
+      else
+        warn "Same commit as installed, but local targets differ (manual drift). Re-run install to restore the canonical tree."
+      fi
+    else
+      success "Already up to date: installed version matches the remote version."
+    fi
+    return 0
+  fi
+
+  log "A newer skill-pack version is available: $INSTALLED_COMMIT -> $REMOTE_COMMIT"
+  clone_repository >/dev/null
+  validate_skill_tree "$SOURCE_SKILLS_DIR"
+  log "Source commit: $SOURCE_COMMIT"
+  log "Validated skills: $LAST_SKILL_COUNT"
+  reference="$(reference_target)"
+  if [[ -n "$reference" ]]; then
+    log "Skill diff against $reference:"
+    summarize_skill_changes "$reference" "$SOURCE_SKILLS_DIR"
+  else
+    log "No installed targets found; all $LAST_SKILL_COUNT skills would be new."
+  fi
+  log "Run './install-skills.sh install' to update."
+}
+
 run_install() {
+  local reference=""
   ((DRY_RUN)) || acquire_installer_lock
   clone_repository
   validate_skill_tree "$SOURCE_SKILLS_DIR"
@@ -1118,10 +1422,41 @@ run_install() {
   log "AGY target: $AGY_TARGET (source: $AGY_TARGET_ORIGIN)"
   log "Backup root: $BACKUP_ROOT"
 
+  if resolve_installed_commit; then
+    log "Installed version: $INSTALLED_COMMIT"
+    if [[ "$INSTALLED_COMMIT" == "$SOURCE_COMMIT" && "$INSTALLED_REPOSITORY" == "$REPOSITORY_URL" && "$INSTALLED_BRANCH" == "$BRANCH" ]]; then
+      reference="$(reference_target)"
+      if [[ -n "$reference" ]] && targets_match_source "$reference" && ((FORCE == 0)); then
+        success "Already up to date: version $SOURCE_COMMIT is installed in all targets."
+        log "Use './install-skills.sh install --force' to reinstall the same version."
+        return 0
+      fi
+      if [[ -n "$reference" ]] && ! targets_match_source "$reference"; then
+        warn "Same commit as installed, but local targets differ (manual drift). Proceeding with reinstall."
+      elif ((FORCE == 0)); then
+        # State matches but reference check was inconclusive (e.g. missing
+        # targets on first run with a stale state file); fall through to install.
+        :
+      fi
+    else
+      reference="$(reference_target)"
+      if [[ -n "$reference" ]]; then
+        log "Skill changes vs $reference:"
+        summarize_skill_changes "$reference" "$SOURCE_SKILLS_DIR"
+      fi
+    fi
+  else
+    log "Installed version: none (fresh install)"
+  fi
+
   if ((DRY_RUN)); then
     success "Dry run complete; no target, replacement, or backup directory was created."
     warn "A real replacement removes existing skills from all three targets. Reinstall Gentle AI afterward, then restart OpenCode, Claude, and AGY."
     return 0
+  fi
+
+  if ((FORCE)); then
+    log "Force reinstall requested; proceeding even if the version is unchanged."
   fi
 
   prepare_tree "$SOURCE_SKILLS_DIR" "$OPENCODE_TARGET" DESIRED_OPENCODE_PREPARED
@@ -1151,6 +1486,7 @@ run_install() {
   DESIRED_AGY_SOURCE="$SOURCE_SKILLS_DIR"
   run_transaction "install"
 
+  write_installed_state "$SOURCE_COMMIT" "$SOURCE_SKILL_COUNT"
   post_commit_success "Backup snapshot: $LAST_SNAPSHOT_ID"
   post_commit_success "Installed $SOURCE_SKILL_COUNT skills from commit $SOURCE_COMMIT into OpenCode, Claude, and AGY."
   post_commit_warn "This replacement removed existing skills from all three directories. Reinstall Gentle AI, then restart OpenCode, Claude, and AGY."
@@ -1218,6 +1554,9 @@ run_restore() {
 
   info "Restoring snapshot $selected_id across all captured targets..."
   run_transaction "restore"
+  if [[ "$selected_commit" =~ ^[0-9a-f]{40}$ ]]; then
+    write_installed_state "$selected_commit" "$(count_skill_manifests "$OPENCODE_TARGET")"
+  fi
   post_commit_success "Restored snapshot: $selected_id"
   post_commit_success "Pre-restore safety snapshot: $safety_id"
   if ((selected_opencode_captured && selected_claude_captured && selected_agy_captured)); then
@@ -1264,11 +1603,12 @@ interactive_menu() {
     printf '\n%sChito Skill Installer%s\n' "$COLOR_BOLD" "$COLOR_RESET"
     printf '  1) Install/update all three targets\n'
     printf '  2) Dry run\n'
-    printf '  3) List backups\n'
-    printf '  4) Restore backup\n'
-    printf '  5) Help\n'
-    printf '  6) Exit\n'
-    printf 'Choose [1-6]: '
+    printf '  3) Check for updates (status)\n'
+    printf '  4) List backups\n'
+    printf '  5) Restore backup\n'
+    printf '  6) Help\n'
+    printf '  7) Exit\n'
+    printf 'Choose [1-7]: '
     IFS= read -r choice || return 0
 
     case "$choice" in
@@ -1281,11 +1621,12 @@ interactive_menu() {
         fi
         ;;
       2) "$SCRIPT_PATH" dry-run ;;
-      3) list_backups ;;
-      4) interactive_restore ;;
-      5) usage ;;
-      6) return 0 ;;
-      *) warn "Enter a number from 1 to 6." ;;
+      3) "$SCRIPT_PATH" status ;;
+      4) list_backups ;;
+      5) interactive_restore ;;
+      6) usage ;;
+      7) return 0 ;;
+      *) warn "Enter a number from 1 to 7." ;;
     esac
   done
 }
@@ -1342,6 +1683,7 @@ main() {
 
   case "$ACTION" in
     install) run_install ;;
+    status) run_status ;;
     list) list_backups ;;
     restore)
       if [[ -z "$RESTORE_ID" ]]; then

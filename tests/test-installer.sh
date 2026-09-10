@@ -73,6 +73,7 @@ run_installer() {
     AGY_SKILLS_DIR="$agy_target" \
     SKILL_BACKUP_DIR="$backup_root" \
     SKILL_INSTALLER_LOCK_FILE="${backup_root%/*}/installer.lock" \
+    SKILL_INSTALLER_STATE_FILE="${backup_root%/*}/installer.state" \
     "$INSTALLER" "$@"
 }
 
@@ -107,6 +108,7 @@ run_installer_with_tmpdir() {
     AGY_SKILLS_DIR="$agy_target" \
     SKILL_BACKUP_DIR="$backup_root" \
     SKILL_INSTALLER_LOCK_FILE="${backup_root%/*}/installer.lock" \
+    SKILL_INSTALLER_STATE_FILE="${backup_root%/*}/installer.state" \
     "$INSTALLER" "$@"
 }
 
@@ -130,6 +132,7 @@ run_autodetect_dry_run() {
     SKILL_PACK_MIN_SKILL_COUNT="2" \
     SKILL_BACKUP_DIR="$backup_root" \
     SKILL_INSTALLER_LOCK_FILE="${backup_root%/*}/installer.lock" \
+    SKILL_INSTALLER_STATE_FILE="${backup_root%/*}/installer.state" \
     "$@" \
     "$INSTALLER" dry-run
 }
@@ -777,6 +780,7 @@ test_rejects_unvalidated_source_before_snapshot() {
     AGY_SKILLS_DIR="$fixture/agy/skills" \
     SKILL_BACKUP_DIR="$backup_root" \
     SKILL_INSTALLER_LOCK_FILE="$fixture/installer.lock" \
+    SKILL_INSTALLER_STATE_FILE="$fixture/installer.state" \
     "$INSTALLER" install 2>&1)"; then
     fail "An undersized source unexpectedly passed validation"
   fi
@@ -976,6 +980,7 @@ test_rejects_root_after_backup_normalization() {
     AGY_SKILLS_DIR="$fixture/agy/skills" \
     SKILL_BACKUP_DIR="///" \
     SKILL_INSTALLER_LOCK_FILE="$fixture/installer.lock" \
+    SKILL_INSTALLER_STATE_FILE="$fixture/installer.state" \
     "$INSTALLER" list 2>&1)"; then
     fail "Backup path /// unexpectedly normalized to an accepted root"
   fi
@@ -1068,6 +1073,7 @@ test_rejects_lock_path_inside_codegraph() {
     AGY_SKILLS_DIR="$fixture/agy/skills" \
     SKILL_BACKUP_DIR="$backup_root" \
     SKILL_INSTALLER_LOCK_FILE="$lock_path" \
+    SKILL_INSTALLER_STATE_FILE="$fixture/installer.state" \
     "$INSTALLER" install 2>&1)"; then
     fail "Lock path inside .codegraph unexpectedly accepted"
   fi
@@ -1389,6 +1395,7 @@ test_uses_agy_global_path_and_protects_antigravity_cli() {
     CLAUDE_SKILLS_DIR="$claude_target" \
     SKILL_BACKUP_DIR="$backup_root" \
     SKILL_INSTALLER_LOCK_FILE="$fixture/installer.lock" \
+    SKILL_INSTALLER_STATE_FILE="$fixture/installer.state" \
     "$INSTALLER" install >/dev/null
 
   assert_file "$agy_target/alpha/SKILL.md"
@@ -1405,6 +1412,7 @@ test_uses_agy_global_path_and_protects_antigravity_cli() {
     AGY_SKILLS_DIR="$protected_target" \
     SKILL_BACKUP_DIR="$backup_root" \
     SKILL_INSTALLER_LOCK_FILE="$fixture/installer.lock" \
+    SKILL_INSTALLER_STATE_FILE="$fixture/installer.state" \
     "$INSTALLER" install 2>&1)"; then
     fail "Protected antigravity-cli AGY target unexpectedly accepted"
   fi
@@ -1434,6 +1442,7 @@ test_rejects_agy_target_overlap() {
     AGY_SKILLS_DIR="$opencode_target" \
     SKILL_BACKUP_DIR="$backup_root" \
     SKILL_INSTALLER_LOCK_FILE="$fixture/installer.lock" \
+    SKILL_INSTALLER_STATE_FILE="$fixture/installer.state" \
     "$INSTALLER" install 2>&1)"; then
     fail "Overlapping AGY and OpenCode targets unexpectedly accepted"
   fi
@@ -1703,6 +1712,151 @@ test_relative_runtime_roots_fail_before_mutation() {
   done
 }
 
+state_value() {
+  metadata_value "$1" "$2"
+}
+
+test_status_reports_never_installed() {
+  local repository="$1"
+  local fixture="$TEST_ROOT/version-never-installed"
+  local opencode_target="$fixture/opencode/skills"
+  local claude_target="$fixture/claude/skills"
+  local backup_root="$fixture/BKOld"
+  local remote_commit
+  local output
+
+  remote_commit="$(git -C "$repository" rev-parse HEAD)"
+  if ! output="$(run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" status 2>&1)"; then
+    fail "Status command failed unexpectedly: $output"
+  fi
+
+  assert_contains "$output" "no previous install"
+  assert_contains "$output" "$remote_commit"
+  assert_absent "$backup_root"
+  assert_absent "${backup_root%/*}/installer.state"
+  assert_absent "$opencode_target"
+  assert_absent "$claude_target"
+}
+
+test_install_writes_state_file() {
+  local repository="$1"
+  local fixture="$TEST_ROOT/version-state-file"
+  local opencode_target="$fixture/opencode/skills"
+  local claude_target="$fixture/claude/skills"
+  local backup_root="$fixture/BKOld"
+  local state_file="${backup_root%/*}/installer.state"
+  local source_commit
+  local output
+
+  source_commit="$(git -C "$repository" rev-parse HEAD)"
+  if ! output="$(run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" install 2>&1)"; then
+    fail "Install command failed unexpectedly: $output"
+  fi
+
+  assert_file "$state_file"
+  [[ "$(state_value "$state_file" source_commit)" == "$source_commit" ]] || fail "State commit is wrong"
+  [[ "$(state_value "$state_file" branch)" == "main" ]] || fail "State branch is wrong"
+  [[ "$(state_value "$state_file" skill_count)" == "2" ]] || fail "State skill count is wrong"
+  assert_contains "$(state_value "$state_file" repository_url)" "$repository"
+}
+
+test_install_is_idempotent_without_new_snapshot() {
+  local repository="$1"
+  local fixture="$TEST_ROOT/version-idempotent"
+  local opencode_target="$fixture/opencode/skills"
+  local claude_target="$fixture/claude/skills"
+  local backup_root="$fixture/BKOld"
+  local output
+
+  run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" install >/dev/null
+  assert_snapshot_count "$backup_root" 1
+  if ! output="$(run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" install 2>&1)"; then
+    fail "Repeated install failed unexpectedly: $output"
+  fi
+
+  assert_contains "$output" "Already up to date"
+  assert_snapshot_count "$backup_root" 1
+  assert_file "$opencode_target/alpha/SKILL.md"
+}
+
+test_install_force_reinstalls_same_version() {
+  local repository="$1"
+  local fixture="$TEST_ROOT/version-force"
+  local opencode_target="$fixture/opencode/skills"
+  local claude_target="$fixture/claude/skills"
+  local backup_root="$fixture/BKOld"
+  local output
+
+  run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" install >/dev/null
+  if ! output="$(run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" install --force 2>&1)"; then
+    fail "Forced reinstall failed unexpectedly: $output"
+  fi
+
+  assert_contains "$output" "Force reinstall"
+  assert_snapshot_count "$backup_root" 2
+}
+
+test_status_detects_newer_version_with_skill_diff() {
+  local repository="$1"
+  local fixture="$TEST_ROOT/version-status-diff"
+  local opencode_target="$fixture/opencode/skills"
+  local claude_target="$fixture/claude/skills"
+  local backup_root="$fixture/BKOld"
+  local evolving_repository="$fixture/evolving-repo"
+  local output
+
+  run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" install >/dev/null
+  clone_fixture_repository "$repository" "$evolving_repository"
+  create_skill "$evolving_repository" "gamma"
+  printf -- '---\nname: alpha\ndescription: Fixture skill modified\n---\n\n# alpha modified\n' \
+    >"$evolving_repository/skills/alpha/SKILL.md"
+  commit_fixture_change "$evolving_repository" "test: add gamma and modify alpha"
+
+  if ! output="$(run_installer "$evolving_repository" "$opencode_target" "$claude_target" "$backup_root" status 2>&1)"; then
+    fail "Status command failed unexpectedly: $output"
+  fi
+
+  assert_contains "$output" "newer skill-pack version"
+  assert_contains "$output" "+ gamma"
+  assert_contains "$output" "~ alpha"
+  assert_snapshot_count "$backup_root" 1
+  assert_absent "$opencode_target/gamma/SKILL.md"
+}
+
+test_install_upgrades_and_updates_state() {
+  local repository="$1"
+  local fixture="$TEST_ROOT/version-upgrade"
+  local opencode_target="$fixture/opencode/skills"
+  local claude_target="$fixture/claude/skills"
+  local agy_target="$fixture/agy/skills"
+  local backup_root="$fixture/BKOld"
+  local state_file="${backup_root%/*}/installer.state"
+  local evolving_repository="$fixture/evolving-repo"
+  local new_commit
+  local output
+  local status_output
+
+  run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" install >/dev/null
+  clone_fixture_repository "$repository" "$evolving_repository"
+  create_skill "$evolving_repository" "gamma"
+  commit_fixture_change "$evolving_repository" "test: add gamma skill"
+  new_commit="$(git -C "$evolving_repository" rev-parse HEAD)"
+
+  if ! output="$(run_installer "$evolving_repository" "$opencode_target" "$claude_target" "$backup_root" install 2>&1)"; then
+    fail "Upgrade install failed unexpectedly: $output"
+  fi
+
+  assert_snapshot_count "$backup_root" 2
+  assert_file "$opencode_target/gamma/SKILL.md"
+  assert_file "$claude_target/gamma/SKILL.md"
+  assert_file "$agy_target/gamma/SKILL.md"
+  [[ "$(state_value "$state_file" source_commit)" == "$new_commit" ]] || fail "State was not updated to the new commit"
+  [[ "$(state_value "$state_file" skill_count)" == "3" ]] || fail "State skill count was not updated"
+
+  status_output="$(run_installer "$evolving_repository" "$opencode_target" "$claude_target" "$backup_root" status 2>&1)"
+  assert_contains "$status_output" "Already up to date"
+}
+
 main() {
   local repository
   local test_case
@@ -1753,6 +1907,12 @@ main() {
     test_runtime_targets_use_claude_config_dir
     test_empty_runtime_variables_fall_back_to_defaults
     test_relative_runtime_roots_fail_before_mutation
+    test_status_reports_never_installed
+    test_install_writes_state_file
+    test_install_is_idempotent_without_new_snapshot
+    test_install_force_reinstalls_same_version
+    test_status_detects_newer_version_with_skill_diff
+    test_install_upgrades_and_updates_state
   )
 
   TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/chito-skill-tests.XXXXXX")"

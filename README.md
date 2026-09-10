@@ -41,13 +41,16 @@ directly into a shell.
 | Command | Source | Changes skill targets? | Changes backups? | Confirmation |
 |---|---|---:|---:|---|
 | `./install-skills.sh dry-run` | Fresh shallow clone | No | No | No |
-| `./install-skills.sh install` | Fresh shallow clone | Replaces all three | Creates an install snapshot | No |
+| `./install-skills.sh install` | Fresh shallow clone | Replaces all three, unless the same version is already installed | Creates an install snapshot, unless already up to date | No |
+| `./install-skills.sh install --force` | Fresh shallow clone | Replaces all three even if the version is unchanged | Creates an install snapshot | No |
+| `./install-skills.sh status` | `git ls-remote` plus a fresh shallow clone when a diff is needed | No | No | No |
 | `./install-skills.sh list` | Local snapshots | No | No | No |
 | `./install-skills.sh restore BACKUP_ID` | Local snapshot | Restores captured states | Creates a pre-restore snapshot | No |
 | `./install-skills.sh menu` | Depends on selection | Depends on selection | Depends on selection | Yes, for install and restore |
 | `./install-skills.sh help` | None | No | No | No |
 
-`--dry-run` remains an alias for `dry-run`. Running the script without arguments
+`--dry-run` remains an alias for `dry-run`. `check` remains an alias for
+`status`. Running the script without arguments
 opens the menu only when a TTY is available. In a headless session, use an
 explicit command.
 
@@ -66,6 +69,27 @@ It does **not** acquire the install lock, create target directories, prepare
 replacement directories, create `BKOld/`, make a snapshot, or change existing
 skills. Temporary staging is removed when the command exits.
 
+## Check for updates
+
+`status` compares the installed skill-pack commit against the remote source
+without changing targets or backups:
+
+```bash
+./install-skills.sh status
+```
+
+It reports the installed commit, the remote commit, and a per-skill summary of
+`+new / ~modified / -removed` skills (names capped at 20 per group). If the
+commits match but a local target was edited by hand, it warns about manual
+drift and suggests reinstalling. `install` and `dry-run` print the same
+installed-vs-source comparison; a repeated `install` of the same commit is a
+no-op unless `--force` is given.
+
+The last installed commit is recorded in `.installed-skills.state` beside the
+script (override with `SKILL_INSTALLER_STATE_FILE`). Installations made before
+this file existed fall back to the newest `reason=install` snapshot in `BKOld/`.
+`restore` updates the state file to the restored snapshot's commit.
+
 ## Install behavior and safety
 
 After the same source checks as a dry run, `install` prepares identical copies
@@ -82,7 +106,8 @@ one transaction.
 | Path protection | Rejects unsafe, overlapping, root, symlink, protected, and `.codegraph` paths, plus symlinks inside the downloaded tree. |
 | Snapshot retention | Never silently deletes or prunes managed snapshots. |
 
-By default, installation also creates `BKOld/` and `.install-skills.lock` beside
+By default, installation also creates `BKOld/`, `.install-skills.lock`, and
+`.installed-skills.state` beside
 the script. Missing target parent directories are created when replacements are
 prepared. The installer does not modify OpenCode commands, Engram, CodeGraph
 indexes, `~/.agents/skills`, or `~/.gemini/antigravity-cli/skills`.
@@ -154,6 +179,7 @@ targets automatically.
 | `CLAUDE_CONFIG_DIR` | Claude configuration root | Appends `/skills` |
 | `SKILL_BACKUP_DIR` | Managed snapshot root | `BKOld/` beside the script; override must be absolute |
 | `SKILL_INSTALLER_LOCK_FILE` | Install/restore lock file | `.install-skills.lock` beside the script; override must be absolute |
+| `SKILL_INSTALLER_STATE_FILE` | Installed-version state file | `.installed-skills.state` beside the script; override must be absolute |
 | `SKILL_PACK_REPOSITORY_URL` | Source repository | `https://github.com/ChitoLabs/ai-skill-pack` |
 | `SKILL_PACK_BRANCH` | Source branch | `main` |
 | `SKILL_PACK_MIN_SKILL_COUNT` | Minimum accepted manifests | Positive integer; default `100` |
@@ -179,7 +205,7 @@ The installer requires Bash and these commands:
 |---|---|
 | Source retrieval | `git` |
 | Files and paths | `mktemp`, `cp`, `mv`, `rm`, `mkdir`, `realpath`, `find` |
-| Validation and metadata | `diff`, `date` |
+| Validation and metadata | `diff`, `date`, `grep`, `cut`, `sort`, `head` |
 | Install/restore locking | `flock` |
 
 On Debian or Ubuntu, the usual packages are:
@@ -202,6 +228,7 @@ scp install-skills.sh server:~/install-skills.sh
 ssh -t server 'chmod u+x ~/install-skills.sh && ~/install-skills.sh menu'
 
 ssh server '~/install-skills.sh dry-run'
+ssh server '~/install-skills.sh status'
 ssh server '~/install-skills.sh install'
 ssh server '~/install-skills.sh list'
 ssh server '~/install-skills.sh restore 20260831T170000Z-a1b2c3d4'

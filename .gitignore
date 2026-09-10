@@ -1,3 +1,5 @@
 # Local installer runtime state
 .install-skills.lock
+.installed-skills.state
 BKOld/
+.atl/
