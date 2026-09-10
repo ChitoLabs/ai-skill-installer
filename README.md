@@ -1,14 +1,14 @@
 # Safely install `ai-skill-pack` in OpenCode, Claude, and AGY
 
-`install-skills.sh` installs or updates the complete
-[`ChitoLabs/ai-skill-pack`](https://github.com/ChitoLabs/ai-skill-pack)
-skill tree in OpenCode, Claude, and AGY. Before replacement, it preserves the
-current trees in a managed snapshot and uses a transactional rollback if the
-update fails.
+`install-skills.sh` installs the complete
+[`ChitoLabs/ai-skill-pack`](https://github.com/ChitoLabs/ai-skill-pack) skill
+tree into OpenCode, Claude, and AGY. It checks the source commit before an
+update, creates managed snapshots, and uses a transactional rollback if a
+replacement fails.
 
-> **Before installing:** `install` replaces **all three** skill directories in
-> full. This includes Gentle AI skills where present. Reinstall Gentle AI after
-> the update if you use it, then restart OpenCode, Claude, and AGY.
+> **Important:** `install` replaces **all three** skill directories in full.
+> This includes Gentle AI skills where present. Reinstall Gentle AI after the
+> update if you use it, then restart OpenCode, Claude, and AGY.
 
 ## Quick start
 
@@ -27,95 +27,140 @@ chmod u+x install-skills.sh
 ```
 
 The installer does not require root access and should not be run with `sudo`.
-This download-then-inspect workflow is preferred over piping a remote script
+Downloading and inspecting the script is preferred over piping a remote script
 directly into a shell.
 
-> **Fresh source on every run:** each `dry-run` and `install` performs a new
-> shallow clone. By default, it clones the `main` branch from
-> `ChitoLabs/ai-skill-pack`. The source is staged temporarily and removed
-> afterward; it is not cached. `list` and `restore` do not clone or contact the
-> source repository—they use local snapshots from `BKOld/`.
+Every `dry-run` and `install` performs a fresh shallow clone. By default, the
+installer clones the `main` branch from `ChitoLabs/ai-skill-pack`, stages it
+temporarily, and removes the staging directory afterward. `list` and `restore`
+use local snapshots and do not contact the source repository.
 
-## What each command does
+## Check before updating
 
-| Command | Source | Changes skill targets? | Changes backups? | Confirmation |
-|---|---|---:|---:|---|
+Use `status` before a later update. `check` is an alias:
+
+```bash
+./install-skills.sh status
+# equivalent:
+./install-skills.sh check
+```
+
+`status` first resolves the remote branch with `git ls-remote`, then compares
+the remote commit with the installed commit. It never changes skill targets or
+managed backups.
+
+| Situation | What the installer reports or does |
+|---|---|
+| No previous install is recorded | Reports the remote version and recommends `install`. |
+| Commits match | Reports that the installation is up to date. |
+| Commits match, but a target was edited by hand | Warns about **manual drift** and suggests running `install` to restore the canonical tree. |
+| The remote commit is newer | Reports `installed -> remote` and a skill summary: `+new / ~modified / -removed`. |
+
+When an installed target is available, the summary compares the source skill
+tree with the first existing target in this order: OpenCode, Claude, then AGY.
+Names are listed alphabetically, with a maximum of 20 names in each group. A
+fresh shallow clone is used when `status` needs source content for this
+comparison.
+
+`status` compares commits, not timestamps. If the configured repository URL or
+branch differs from the last install, it warns that the comparison is by commit
+only.
+
+When a prior installation is recorded, `install` and `dry-run` also report the
+installed-versus-source comparison before deciding whether to proceed.
+
+### Idempotent install
+
+`install` performs the same source validation and version check before changing
+targets:
+
+- A repeated install of the same recorded source commit is a no-op when the
+  existing target already matches the canonical source. It creates no new
+  snapshot.
+- If the same commit is installed but local content has drifted, it warns and
+  reinstalls the canonical tree.
+- A newer commit creates an install snapshot and updates all three targets.
+- `install --force` explicitly reinstalls the same version and creates a new
+  install snapshot even when no update is available.
+
+```bash
+./install-skills.sh install
+./install-skills.sh install --force
+```
+
+### Installed-version state
+
+After a successful install, the installer records the repository URL, branch,
+source commit, skill count, and UTC installation time in
+`.installed-skills.state` beside the script. Override that location with
+`SKILL_INSTALLER_STATE_FILE`.
+
+If the state file is missing or invalid, the installer falls back to the newest
+`reason=install` snapshot with a valid source commit in `BKOld/`. After a
+successful restore, `restore` updates the state file to the selected snapshot's
+source commit when that commit is recorded.
+
+## Commands
+
+| Command | Source access | Changes targets? | Changes backups? | Prompts? |
+|---|---|---:|---:|---:|
 | `./install-skills.sh dry-run` | Fresh shallow clone | No | No | No |
-| `./install-skills.sh install` | Fresh shallow clone | Replaces all three, unless the same version is already installed | Creates an install snapshot, unless already up to date | No |
-| `./install-skills.sh install --force` | Fresh shallow clone | Replaces all three even if the version is unchanged | Creates an install snapshot | No |
-| `./install-skills.sh status` | `git ls-remote` plus a fresh shallow clone when a diff is needed | No | No | No |
+| `./install-skills.sh install` | Fresh shallow clone | Replaces all three unless already up to date | Creates an install snapshot unless it is a no-op | No |
+| `./install-skills.sh install --force` | Fresh shallow clone | Replaces all three even when the version is unchanged | Creates an install snapshot | No |
+| `./install-skills.sh status` or `check` | `git ls-remote`, plus a temporary clone when source content is needed | No | No | No |
 | `./install-skills.sh list` | Local snapshots | No | No | No |
 | `./install-skills.sh restore BACKUP_ID` | Local snapshot | Restores captured states | Creates a pre-restore snapshot | No |
-| `./install-skills.sh menu` | Depends on selection | Depends on selection | Depends on selection | Yes, for install and restore |
+| `./install-skills.sh menu` | Depends on the selection | Depends on the selection | Depends on the selection | Yes, for install and restore |
 | `./install-skills.sh help` | None | No | No | No |
 
-`--dry-run` remains an alias for `dry-run`. `check` remains an alias for
-`status`. Running the script without arguments
-opens the menu only when a TTY is available. In a headless session, use an
-explicit command.
+`--dry-run` is an alias for `dry-run`. With no arguments, the script opens the
+menu only when a TTY is available. In a headless session, use an explicit
+command. `restore` without `BACKUP_ID` requires a TTY for interactive selection;
+headless sessions must provide the ID. Explicit `install` and `restore
+BACKUP_ID` do not prompt.
 
 ## Dry run first
 
 A dry run:
 
-1. resolves and validates the configured paths;
-2. creates a temporary staging directory;
-3. performs a fresh `git clone --depth 1 --single-branch`;
-4. validates the source commit and at least 100 top-level `SKILL.md` manifests;
-5. reports the source commit, skill count, resolved targets, path sources, and
+1. Resolves and validates the configured paths.
+2. Creates a temporary staging directory.
+3. Performs a fresh `git clone --depth 1 --single-branch`.
+4. Validates the source commit and at least the configured number of top-level
+   `SKILL.md` manifests.
+5. Reports the source commit, skill count, resolved targets, path sources, and
    backup root.
 
 It does **not** acquire the install lock, create target directories, prepare
 replacement directories, create `BKOld/`, make a snapshot, or change existing
 skills. Temporary staging is removed when the command exits.
 
-## Check for updates
-
-`status` compares the installed skill-pack commit against the remote source
-without changing targets or backups:
-
-```bash
-./install-skills.sh status
-```
-
-It reports the installed commit, the remote commit, and a per-skill summary of
-`+new / ~modified / -removed` skills (names capped at 20 per group). If the
-commits match but a local target was edited by hand, it warns about manual
-drift and suggests reinstalling. `install` and `dry-run` print the same
-installed-vs-source comparison; a repeated `install` of the same commit is a
-no-op unless `--force` is given.
-
-The last installed commit is recorded in `.installed-skills.state` beside the
-script (override with `SKILL_INSTALLER_STATE_FILE`). Installations made before
-this file existed fall back to the newest `reason=install` snapshot in `BKOld/`.
-`restore` updates the state file to the restored snapshot's commit.
-
 ## Install behavior and safety
 
 After the same source checks as a dry run, `install` prepares identical copies
-for all three targets, snapshots their current states, and replaces the trees as
-one transaction.
+for all three targets, snapshots their current states, and replaces the trees
+as one transaction.
 
 | Safety property | Behavior |
 |---|---|
 | Source isolation | Uses temporary staging and never executes downloaded scripts. |
 | Validation | Requires a valid 40-character source commit and at least the configured number of top-level manifests. |
 | Complete backup | Preserves each existing target tree, not only `SKILL.md` files; a missing target is recorded as absent. |
-| Transaction | Validates all installed trees and rolls all participating targets back if failure occurs before commit. |
+| Transaction | Validates all prepared trees and rolls participating targets back if a failure occurs before commit. |
 | Concurrency | `install` and `restore` hold one non-blocking `flock`; a second destructive operation exits before cloning or changing data. |
 | Path protection | Rejects unsafe, overlapping, root, symlink, protected, and `.codegraph` paths, plus symlinks inside the downloaded tree. |
 | Snapshot retention | Never silently deletes or prunes managed snapshots. |
 
 By default, installation also creates `BKOld/`, `.install-skills.lock`, and
-`.installed-skills.state` beside
-the script. Missing target parent directories are created when replacements are
-prepared. The installer does not modify OpenCode commands, Engram, CodeGraph
-indexes, `~/.agents/skills`, or `~/.gemini/antigravity-cli/skills`.
+`.installed-skills.state` beside the script. Missing target parent directories
+are created when replacements are prepared. The installer does not modify
+OpenCode commands, Engram, CodeGraph indexes, `~/.agents/skills`, or
+`~/.gemini/antigravity-cli/skills`.
 
 ## Targets and automatic path resolution
 
-The installer selects the first non-empty value in each row. It reports the
-resolved canonical path and the source used before installation.
+The installer selects the first non-empty value in each row. Before an install,
+it reports the resolved canonical path and the source used.
 
 | Runtime | Path precedence, highest first | Default |
 |---|---|---|
@@ -123,9 +168,9 @@ resolved canonical path and the source used before installation.
 | Claude | `CLAUDE_SKILLS_DIR` → `CLAUDE_CONFIG_DIR/skills` | `~/.claude/skills` |
 | AGY | `AGY_SKILLS_DIR` | `~/.gemini/config/skills` |
 
-> **AGY path:** the supported global target is `~/.gemini/config/skills`, based
-> on the verified AGY CLI v1.1.19 customization layout. The installer never uses
-> or modifies `~/.gemini/antigravity-cli/skills`.
+> **AGY path:** The supported global target is `~/.gemini/config/skills`, based
+> on the verified AGY CLI v1.1.19 customization layout. The installer never
+> uses or modifies `~/.gemini/antigravity-cli/skills`.
 
 Explicit target paths and configuration roots must resolve to safe absolute
 paths, and each final target must end in `/skills`. Empty variables fall through
@@ -145,7 +190,7 @@ BKOld/
     └── agy/        # only when the target existed
 ```
 
-List and restore them with:
+List and restore snapshots with:
 
 ```bash
 ./install-skills.sh list
@@ -154,7 +199,7 @@ List and restore them with:
 
 `list` reports each snapshot's ID, UTC date, reason, represented targets, skill
 counts, and source commit when known. `restore` validates the selected snapshot,
-creates a new three-target `pre-restore` safety snapshot, and then restores every
+creates a new three-target `pre-restore` safety snapshot, and restores every
 captured state transactionally. A target captured as absent becomes absent
 again; a target not captured by the selected snapshot remains unchanged.
 
@@ -163,8 +208,8 @@ OpenCode and Claude only, so AGY remains unchanged during their restoration.
 
 There is no separate `uninstall` command. To remove an installation and return
 to the exact earlier states, restore the snapshot created by that install. If
-you used custom target or backup overrides during installation, reuse those same
-overrides when listing or restoring—the snapshot metadata does not relocate
+custom target or backup overrides were used during installation, reuse those
+same overrides when listing or restoring; snapshot metadata does not relocate
 targets automatically.
 
 ## Environment overrides
@@ -208,14 +253,15 @@ The installer requires Bash and these commands:
 | Validation and metadata | `diff`, `date`, `grep`, `cut`, `sort`, `head` |
 | Install/restore locking | `flock` |
 
-On Debian or Ubuntu, the usual packages are:
+`flock` is required only by `install` and `restore`. On Debian or Ubuntu, the
+usual packages are:
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y bash git coreutils diffutils findutils util-linux
 ```
 
-`dry-run` and `install` also require network access to the configured source
+`status`, `dry-run`, and `install` require access to the configured source
 repository. `list` and `restore` operate from local snapshots.
 
 ## SSH and headless use
@@ -234,8 +280,8 @@ ssh server '~/install-skills.sh list'
 ssh server '~/install-skills.sh restore 20260831T170000Z-a1b2c3d4'
 ```
 
-Explicit `install` and `restore BACKUP_ID` do not prompt. This is intentional for
-automation, so run `dry-run` first and verify the reported paths.
+Explicit `install` and `restore BACKUP_ID` do not prompt. This is intentional
+for automation, so run `dry-run` first and verify the reported paths.
 
 ## Verify
 
@@ -255,8 +301,8 @@ find "$HOME/.claude/skills" -mindepth 2 -maxdepth 2 -type f -name SKILL.md | wc 
 find "$HOME/.gemini/config/skills" -mindepth 2 -maxdepth 2 -type f -name SKILL.md | wc -l
 ```
 
-If path overrides were used, substitute the resolved paths printed by
-`dry-run` or `install`.
+If path overrides were used, substitute the resolved paths printed by `dry-run`
+or `install`.
 
 Repository checks use only temporary repositories, targets, and backup roots;
 they do not touch real skill directories:
