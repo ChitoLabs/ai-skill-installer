@@ -17,6 +17,9 @@ func ValidateSkillTree(root string, minimum, expectedCount int) (int, error) {
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return 0, fmt.Errorf("skill directory not found or unsafe: %s", root)
 	}
+	if filepath.Base(filepath.Clean(root)) == ".codegraph" {
+		return 0, fmt.Errorf("skill directory cannot be named .codegraph: %s", root)
+	}
 	if minimum <= 0 {
 		return 0, fmt.Errorf("minimum skill count must be a positive integer")
 	}

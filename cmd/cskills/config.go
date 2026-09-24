@@ -168,6 +168,9 @@ func (cfg Configuration) validatePaths(home string) error {
 			return err
 		}
 	}
+	if cfg.LockPath == cfg.StatePath {
+		return fmt.Errorf("installer lock and state paths must be different: %s", cfg.LockPath)
+	}
 	return nil
 }
 
