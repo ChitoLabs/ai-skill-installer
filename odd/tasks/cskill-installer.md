@@ -49,7 +49,7 @@ The repository already has a Bash installer with mature path protections, transa
 - **Checks:** `go test ./...`; add command-dispatch/TTY-gating tests using injected input/output and terminal/environment conditions.
 - **Review estimate:** One focused task; target ≤~400 changed lines.
 
-### CSK-002 — Validate configuration, paths, and source before mutation
+### CSK-002 — Validate configuration, paths, and source before mutation ✅
 
 - **Deliverable:** Add Go configuration resolution and validation for skill targets, backup root, state and lock paths, protected locations, overlaps, symlinks, and fetched source content. All validation completes before snapshot or destination mutation.
 - **Route/trigger evidence:** Bash route: `validate_configuration` resolves paths, then invokes `assert_safe_target`, `assert_safe_backup_root`, `assert_safe_lock_path`, and `assert_safe_state_path` (`install-skills.sh:260-442`). Source route: `clone_repository` → `validate_skill_tree` rejects symlinks, `.codegraph`, invalid manifests, and insufficient skill counts (`install-skills.sh:468-508`, `722-745`). Existing fixture patterns: `tests/test-installer.sh` path and source-validation tests, including unsafe TMPDIR, unsafe backup ID, undersized source, symlinks, `.codegraph`, non-regular manifest, and root normalization (`tests/test-installer.sh:674-991`).
@@ -84,5 +84,5 @@ Forecast: five implementation slices (CSK-001–CSK-005), each intended to be in
 ## Progress evidence and next step
 
 - **Planning evidence:** Current branch is `feat/cskill-installer`. Working tree contains untracked `cmd/`, `go.mod`, and `.codegraph/`; the latter is explicitly out of scope. CodeGraph inspection confirmed the current animation functions and their tests; direct read was used for Bash/docs because CodeGraph did not return those shell/documentation files.
-- **Current status:** CSK-001 implemented. `go test ./...`, `go vet ./...`, `go run ./cmd/cskills -static`, and `git diff --check` passed. Explicit help/dispatch fails closed for commands not yet implemented; Bash remains unchanged. Commit evidence pending.
-- **Next step:** Implement CSK-002 configuration and source validation with isolated tests; installer operations remain disabled.
+- **Current status:** CSK-001 committed as `fd19121` (`feat(cskill): add safe terminal CLI scaffold`); checks passed. CSK-002 path/configuration/source validation implemented with isolated tests; `go test ./...`, `go vet ./...` passed, including a regression for Bash-compatible minimum count syntax. Bash unchanged; installer operations remain disabled. CSK-002 commit and native assessment pending.
+- **Next step:** Implement CSK-003 shared backup/state schema and cross-format fixture tests before enabling destructive operations.
