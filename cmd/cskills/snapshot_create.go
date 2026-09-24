@@ -2,19 +2,33 @@ package main
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
 // CreateSnapshot captures all three configured targets and atomically publishes
 // a Bash-compatible v2 snapshot beneath cfg.BackupRoot. It returns the snapshot ID.
 func CreateSnapshot(cfg Configuration, reason, sourceCommit string) (string, error) {
+	return createSnapshot(cfg, reason, sourceCommit, snapshotCreateHooks{})
+}
+
+type snapshotCreateHooks struct {
+	newID         func(time.Time) (string, error)
+	afterCopy     func() error
+	beforePublish func(string) error
+}
+
+func createSnapshot(cfg Configuration, reason, sourceCommit string, hooks snapshotCreateHooks) (string, error) {
 	if reason != "install" && reason != "pre-restore" {
 		return "", fmt.Errorf("invalid snapshot reason")
 	}
@@ -64,6 +78,17 @@ func CreateSnapshot(cfg Configuration, reason, sourceCommit string) (string, err
 		target.meta.Existed = true
 		target.meta.SkillCount = count
 	}
+	sourceFingerprints := make(map[string][sha256.Size]byte)
+	for _, target := range targets {
+		if !target.meta.Existed {
+			continue
+		}
+		fingerprint, err := fingerprintTree(target.path)
+		if err != nil {
+			return "", fmt.Errorf("fingerprint %s target: %w", target.name, err)
+		}
+		sourceFingerprints[target.name] = fingerprint
+	}
 
 	if err := os.MkdirAll(cfg.BackupRoot, 0o700); err != nil {
 		return "", fmt.Errorf("create backup root: %w", err)
@@ -74,55 +99,160 @@ func CreateSnapshot(cfg Configuration, reason, sourceCommit string) (string, err
 	}
 
 	for attempt := 0; attempt < 32; attempt++ {
-		id, err := generateSnapshotID(time.Now().UTC())
+		newID := hooks.newID
+		if newID == nil {
+			newID = generateSnapshotID
+		}
+		id, err := newID(time.Now().UTC())
 		if err != nil {
 			return "", err
 		}
 		metadata.ID = id
 		finalPath := filepath.Join(cfg.BackupRoot, id)
-		if _, err := os.Lstat(finalPath); err == nil {
+		attemptErr := createSnapshotAttempt(cfg.BackupRoot, finalPath, id, targets, metadata, sourceFingerprints, hooks)
+		if errors.Is(attemptErr, errSnapshotPathExists) {
 			continue
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("inspect final snapshot path: %w", err)
 		}
-		tempPath, err := os.MkdirTemp(cfg.BackupRoot, ".snapshot."+id+".")
-		if err != nil {
-			return "", fmt.Errorf("create temporary snapshot: %w", err)
+		if attemptErr != nil {
+			return "", attemptErr
 		}
-		published := false
-		defer func() {
-			if !published {
-				_ = os.RemoveAll(tempPath)
-			}
-		}()
-		for _, target := range targets {
-			if !target.meta.Existed {
-				continue
-			}
-			if err := copyTree(filepath.Join(tempPath, target.name), target.path); err != nil {
-				return "", fmt.Errorf("copy %s target: %w", target.name, err)
-			}
-		}
-		metadataBytes, err := SerializeSnapshotMetadata(metadata)
-		if err != nil {
-			return "", fmt.Errorf("serialize snapshot metadata: %w", err)
-		}
-		if err := os.WriteFile(filepath.Join(tempPath, "metadata"), metadataBytes, 0o600); err != nil {
-			return "", fmt.Errorf("write snapshot metadata: %w", err)
-		}
-		if err := validateSnapshotTrees(tempPath, metadata); err != nil {
-			return "", fmt.Errorf("validate temporary snapshot: %w", err)
-		}
-		if err := os.Rename(tempPath, finalPath); err != nil {
-			if errors.Is(err, os.ErrExist) {
-				continue
-			}
-			return "", fmt.Errorf("publish snapshot: %w", err)
-		}
-		published = true
 		return id, nil
 	}
 	return "", fmt.Errorf("could not generate a unique snapshot ID")
+}
+
+var errSnapshotPathExists = errors.New("snapshot path already exists")
+
+func createSnapshotAttempt(backupRoot, finalPath, id string, targets []struct {
+	name string
+	path string
+	meta *SnapshotTarget
+}, metadata SnapshotMetadata, sourceFingerprints map[string][sha256.Size]byte, hooks snapshotCreateHooks) (result error) {
+	tempPath, err := os.MkdirTemp(backupRoot, ".snapshot."+id+".")
+	if err != nil {
+		return fmt.Errorf("create temporary snapshot: %w", err)
+	}
+	published := false
+	defer func() {
+		if !published {
+			if cleanupErr := os.RemoveAll(tempPath); cleanupErr != nil {
+				result = errors.Join(result, fmt.Errorf("remove temporary snapshot: %w", cleanupErr))
+			}
+		}
+	}()
+	for _, target := range targets {
+		if !target.meta.Existed {
+			continue
+		}
+		if err := copyTree(filepath.Join(tempPath, target.name), target.path); err != nil {
+			return fmt.Errorf("copy %s target: %w", target.name, err)
+		}
+	}
+	if hooks.afterCopy != nil {
+		if err := hooks.afterCopy(); err != nil {
+			return fmt.Errorf("after-copy hook: %w", err)
+		}
+	}
+	metadataBytes, err := SerializeSnapshotMetadata(metadata)
+	if err != nil {
+		return fmt.Errorf("serialize snapshot metadata: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(tempPath, "metadata"), metadataBytes, 0o600); err != nil {
+		return fmt.Errorf("write snapshot metadata: %w", err)
+	}
+	if err := validateSnapshotTrees(tempPath, metadata); err != nil {
+		return fmt.Errorf("validate temporary snapshot: %w", err)
+	}
+	if hooks.beforePublish != nil {
+		if err := hooks.beforePublish(finalPath); err != nil {
+			return fmt.Errorf("before-publish hook: %w", err)
+		}
+	}
+	for _, target := range targets {
+		if !target.meta.Existed {
+			continue
+		}
+		sourceAfter, err := fingerprintTree(target.path)
+		if err != nil {
+			return fmt.Errorf("recheck %s target before publish: %w", target.name, err)
+		}
+		copyFingerprint, err := fingerprintTree(filepath.Join(tempPath, target.name))
+		if err != nil {
+			return fmt.Errorf("verify copied %s target before publish: %w", target.name, err)
+		}
+		if sourceAfter != sourceFingerprints[target.name] || copyFingerprint != sourceFingerprints[target.name] {
+			return fmt.Errorf("%s target changed during snapshot capture", target.name)
+		}
+	}
+	if err := publishSnapshotNoReplace(tempPath, finalPath); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return errSnapshotPathExists
+		}
+		return fmt.Errorf("publish snapshot: %w", err)
+	}
+	published = true
+	return nil
+}
+
+func fingerprintTree(root string) ([sha256.Size]byte, error) {
+	h := sha256.New()
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		writeFingerprintString(h, filepath.ToSlash(relative))
+		var mode [8]byte
+		binary.LittleEndian.PutUint64(mode[:], uint64(info.Mode()))
+		_, _ = h.Write(mode[:])
+		switch {
+		case info.Mode()&os.ModeSymlink != 0:
+			link, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			writeFingerprintString(h, link)
+		case info.IsDir():
+		case info.Mode().IsRegular():
+			file, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			contentHash := sha256.New()
+			_, copyErr := io.Copy(contentHash, file)
+			closeErr := file.Close()
+			if copyErr != nil {
+				return copyErr
+			}
+			if closeErr != nil {
+				return closeErr
+			}
+			_, _ = h.Write(contentHash.Sum(nil))
+		default:
+			return fmt.Errorf("unsupported special file in source tree: %s", path)
+		}
+		return nil
+	})
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	var fingerprint [sha256.Size]byte
+	copy(fingerprint[:], h.Sum(nil))
+	return fingerprint, nil
+}
+
+func writeFingerprintString(h hash.Hash, value string) {
+	var length [8]byte
+	binary.LittleEndian.PutUint64(length[:], uint64(len(value)))
+	_, _ = h.Write(length[:])
+	_, _ = io.Copy(h, strings.NewReader(value))
 }
 
 func generateSnapshotID(now time.Time) (string, error) {

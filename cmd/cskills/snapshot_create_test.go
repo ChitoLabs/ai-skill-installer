@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -220,6 +221,9 @@ func TestCreateSnapshotCleansTemporaryDirectoryOnCopyError(t *testing.T) {
 		t.Fatal("CreateSnapshot() accepted a target containing an unsupported special file")
 	}
 	entries, err := os.ReadDir(cfg.BackupRoot)
+	if os.IsNotExist(err) {
+		return
+	}
 	if err != nil {
 		t.Fatalf("read backup root: %v", err)
 	}
@@ -241,5 +245,100 @@ func TestCreateSnapshotRejectsInvalidInputsBeforeCreatingBackupRoot(t *testing.T
 	}
 	if _, err := os.Lstat(cfg.BackupRoot); !os.IsNotExist(err) {
 		t.Fatalf("invalid input created backup root: %v", err)
+	}
+}
+
+func TestCreateSnapshotRemovesAttemptBeforeRetryAndDoesNotReplaceConcurrentPublication(t *testing.T) {
+	root := t.TempDir()
+	cfg := snapshotTestConfiguration(root)
+	makeSkill(t, cfg.OpenCodeTarget, "sample")
+	ids := []string{"20260924T120000Z-00000001", "20260924T120000Z-00000002"}
+	idIndex := 0
+	firstPublication := filepath.Join(cfg.BackupRoot, ids[0])
+	createConcurrentPath := true
+	hooks := snapshotCreateHooks{
+		newID: func(time.Time) (string, error) {
+			id := ids[idIndex]
+			idIndex++
+			return id, nil
+		},
+		beforePublish: func(finalPath string) error {
+			if finalPath == firstPublication && createConcurrentPath {
+				createConcurrentPath = false
+				if err := os.Mkdir(finalPath, 0o700); err != nil {
+					return err
+				}
+				return os.WriteFile(filepath.Join(finalPath, "owner"), []byte("concurrent creator"), 0o600)
+			}
+			entries, err := os.ReadDir(cfg.BackupRoot)
+			if err != nil {
+				return err
+			}
+			for _, entry := range entries {
+				if strings.HasPrefix(entry.Name(), ".snapshot."+ids[0]+".") {
+					return fmt.Errorf("first attempt temporary directory remains before retry: %s", entry.Name())
+				}
+			}
+			return nil
+		},
+	}
+
+	id, err := createSnapshot(cfg, "install", "unknown", hooks)
+	if err != nil {
+		t.Fatalf("createSnapshot() error = %v", err)
+	}
+	if id != ids[1] {
+		t.Fatalf("snapshot ID = %q, want retry ID %q", id, ids[1])
+	}
+	owner, err := os.ReadFile(filepath.Join(firstPublication, "owner"))
+	if err != nil || string(owner) != "concurrent creator" {
+		t.Fatalf("concurrent publication was replaced: owner=%q, err=%v", owner, err)
+	}
+	if _, err := ValidateSnapshot(filepath.Join(cfg.BackupRoot, id)); err != nil {
+		t.Fatalf("retry snapshot is invalid: %v", err)
+	}
+}
+
+func TestCreateSnapshotFailsClosedWhenSourceChangesDuringCapture(t *testing.T) {
+	tests := []struct {
+		name   string
+		change func(string) error
+	}{
+		{name: "file bytes", change: func(path string) error {
+			return os.WriteFile(filepath.Join(path, "sample", "SKILL.md"), []byte("changed bytes"), 0o600)
+		}},
+		{name: "file mode", change: func(path string) error {
+			return os.Chmod(filepath.Join(path, "sample", "SKILL.md"), 0o640)
+		}},
+		{name: "entry name", change: func(path string) error {
+			return os.Rename(filepath.Join(path, "sample", "SKILL.md"), filepath.Join(path, "sample", "RENAMED.md"))
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			cfg := snapshotTestConfiguration(root)
+			makeSkill(t, cfg.OpenCodeTarget, "sample")
+			hooks := snapshotCreateHooks{afterCopy: func() error { return test.change(cfg.OpenCodeTarget) }}
+			if _, err := createSnapshot(cfg, "install", "unknown", hooks); err == nil || !strings.Contains(err.Error(), "changed during snapshot capture") {
+				t.Fatalf("createSnapshot() error = %v, want source-change rejection", err)
+			}
+			entries, err := os.ReadDir(cfg.BackupRoot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("failed source verification left backup entries: %v", entries)
+			}
+		})
+	}
+}
+
+func snapshotTestConfiguration(root string) Configuration {
+	return Configuration{
+		OpenCodeTarget: filepath.Join(root, "opencode"),
+		ClaudeTarget:   filepath.Join(root, "claude"),
+		AgyTarget:      filepath.Join(root, "agy"),
+		BackupRoot:     filepath.Join(root, "backups"),
 	}
 }
