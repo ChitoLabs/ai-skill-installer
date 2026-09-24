@@ -203,6 +203,29 @@ func TestValidateSnapshotRejectsSymlinkedTarget(t *testing.T) {
 	}
 }
 
+func TestValidateSnapshotRejectsSymlinkedDirectChildBeforeCounting(t *testing.T) {
+	root := filepath.Join(t.TempDir(), testSnapshotID)
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	metadata := validV2Metadata()
+	metadata.OpenCode.SkillCount = 2
+	writeSnapshotMetadata(t, root, metadata)
+	makeSkill(t, filepath.Join(root, "opencode"), "regular")
+	makeSkill(t, filepath.Join(root, "agy"), "one")
+	makeSkill(t, filepath.Join(root, "agy"), "two")
+
+	external := filepath.Join(t.TempDir(), "outside-skill")
+	makeSkill(t, filepath.Dir(external), filepath.Base(external))
+	if err := os.Symlink(external, filepath.Join(root, "opencode", "linked-skill")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ValidateSnapshot(root); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("ValidateSnapshot() error = %v, want direct-child symlink rejection", err)
+	}
+}
+
 func TestParseSnapshotMetadataReadError(t *testing.T) {
 	_, err := ParseSnapshotMetadata(errorReader{})
 	if err == nil || !strings.Contains(err.Error(), "read snapshot metadata") {

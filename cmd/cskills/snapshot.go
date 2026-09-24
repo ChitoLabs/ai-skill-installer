@@ -182,6 +182,13 @@ func ValidateSnapshot(snapshotPath string) (SnapshotMetadata, error) {
 	if metadata.ID != filepath.Base(snapshotPath) {
 		return SnapshotMetadata{}, fmt.Errorf("snapshot directory and metadata IDs do not match")
 	}
+	if err := validateSnapshotTrees(snapshotPath, metadata); err != nil {
+		return SnapshotMetadata{}, err
+	}
+	return metadata, nil
+}
+
+func validateSnapshotTrees(snapshotPath string, metadata SnapshotMetadata) error {
 	for _, item := range []struct {
 		name   string
 		target SnapshotTarget
@@ -192,22 +199,22 @@ func ValidateSnapshot(snapshotPath string) (SnapshotMetadata, error) {
 		entry, statErr := os.Lstat(tree)
 		if !item.target.Captured || !item.target.Existed {
 			if statErr == nil || !os.IsNotExist(statErr) {
-				return SnapshotMetadata{}, fmt.Errorf("unexpected %s tree for absent or uncaptured snapshot target", item.name)
+				return fmt.Errorf("unexpected %s tree for absent or uncaptured snapshot target", item.name)
 			}
 			continue
 		}
 		if statErr != nil || !entry.IsDir() || entry.Mode()&os.ModeSymlink != 0 {
-			return SnapshotMetadata{}, fmt.Errorf("%s snapshot tree is missing or unsafe", item.name)
+			return fmt.Errorf("%s snapshot tree is missing or unsafe", item.name)
 		}
 		count, countErr := countSnapshotManifests(tree)
 		if countErr != nil {
-			return SnapshotMetadata{}, fmt.Errorf("validate %s snapshot tree: %w", item.name, countErr)
+			return fmt.Errorf("validate %s snapshot tree: %w", item.name, countErr)
 		}
 		if count != item.target.SkillCount {
-			return SnapshotMetadata{}, fmt.Errorf("%s snapshot skill count does not match metadata", item.name)
+			return fmt.Errorf("%s snapshot skill count does not match metadata", item.name)
 		}
 	}
-	return metadata, nil
+	return nil
 }
 
 func countSnapshotManifests(root string) (int, error) {
@@ -216,6 +223,21 @@ func countSnapshotManifests(root string) (int, error) {
 		return 0, err
 	}
 	count := 0
+	for _, entry := range entries {
+		info, statErr := os.Lstat(filepath.Join(root, entry.Name()))
+		if statErr != nil {
+			return 0, statErr
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			linkedInfo, linkErr := os.Stat(filepath.Join(root, entry.Name()))
+			if linkErr == nil && linkedInfo.IsDir() {
+				return 0, fmt.Errorf("symlinked direct child directory in snapshot: %s", entry.Name())
+			}
+			if linkErr != nil && !os.IsNotExist(linkErr) && !isNotDirectory(linkErr) {
+				return 0, fmt.Errorf("inspect symlinked direct child in snapshot %s: %w", entry.Name(), linkErr)
+			}
+		}
+	}
 	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
