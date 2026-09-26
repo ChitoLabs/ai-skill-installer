@@ -147,6 +147,16 @@ func TestValidateSkillTreeRejectsMissingAndNonDirectoryRoots(t *testing.T) {
 	}
 }
 
+func TestValidateSkillTreeRejectsCodegraphRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), ".codegraph")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ValidateSkillTree(root, 1, 0); err == nil || !strings.Contains(err.Error(), ".codegraph") {
+		t.Fatalf("ValidateSkillTree() error = %v, want .codegraph rejection", err)
+	}
+}
+
 func makeSkill(t *testing.T, root, name string) {
 	t.Helper()
 	writeManifest(t, filepath.Join(root, name, "SKILL.md"))

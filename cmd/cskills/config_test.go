@@ -132,6 +132,7 @@ func TestValidateConfigurationRejectsUnsafePaths(t *testing.T) {
 		{name: "backup overlaps target", set: map[string]string{"SKILL_BACKUP_DIR": filepath.Join(home, ".config", "opencode")}, want: "overlaps"},
 		{name: "state overlaps target", set: map[string]string{"SKILL_INSTALLER_STATE_FILE": filepath.Join(home, ".config", "opencode", "skills", "state")}, want: "overlaps"},
 		{name: "path in codegraph", set: map[string]string{"SKILL_INSTALLER_LOCK_FILE": filepath.Join(home, "cache", ".codegraph", "lock")}, want: ".codegraph"},
+		{name: "same lock and state path", set: map[string]string{"SKILL_INSTALLER_LOCK_FILE": filepath.Join(home, "installer.data"), "SKILL_INSTALLER_STATE_FILE": filepath.Join(home, "installer.data")}, want: "must be different"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
