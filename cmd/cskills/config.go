@@ -26,6 +26,7 @@ type Configuration struct {
 	BackupRoot        string
 	LockPath          string
 	StatePath         string
+	validated         bool
 }
 
 // ResolveConfiguration applies the installer's environment precedence and
@@ -122,6 +123,7 @@ func ResolveConfiguration(environment map[string]string, scriptDir string) (Conf
 	if err := cfg.validatePaths(home); err != nil {
 		return Configuration{}, err
 	}
+	cfg.validated = true
 	return cfg, nil
 }
 
