@@ -30,6 +30,10 @@ The installer does not require root access and should not be run with `sudo`.
 Downloading and inspecting the script is preferred over piping a remote script
 directly into a shell.
 
+> A separate Go terminal installer, `cskill`, offers the same install, status,
+> list, and restore workflow and reads and writes the same snapshot and
+> state files. See [Go installer (`cskill`)](#go-installer-cskill) below.
+
 Every `dry-run` and `install` performs a fresh shallow clone. By default, the
 installer clones the `main` branch from `ChitoLabs/ai-skill-pack`, stages it
 temporarily, and removes the staging directory afterward. `list` and `restore`
@@ -327,3 +331,138 @@ bash tests/test-installer.sh
 
 After any install or restore, restart affected applications so they reload their
 skills. After install, reinstall Gentle AI first if you use it.
+
+## Go installer (`cskill`)
+
+`cskill` (`cmd/cskills`) is a Linux-only Go command-line installer that offers
+the same install, status, list, and restore workflow as `install-skills.sh`,
+reading and writing the same snapshot metadata and installed-state files so
+either installer can restore snapshots the other created.
+
+### Build and run
+
+Requires the Go toolchain declared in `go.mod` (`go 1.22` or newer). Build from
+the repository root:
+
+```bash
+go build -o cskill ./cmd/cskills
+./cskill --help
+```
+
+`cskill` builds and runs on Linux only: locking, hardlink preservation, and
+snapshot publishing (`cmd/cskills/lock_linux.go`, `hardlink_linux.go`,
+`snapshot_publish_linux.go`) use Linux-specific syscalls (`flock`, raw device
+and inode numbers for hardlink detection).
+
+### Commands
+
+| Command | What it does | Changes targets? | Changes backups? |
+|---|---|---:|---:|
+| `cskill status` | Compares the installed commit (from the state file, or the newest valid install snapshot as fallback) against the remote branch head; on a match with local drift, or on a newer remote commit, clones the source and prints a skill diff | No | No |
+| `cskill list` | Lists managed snapshots under the backup root: ID, UTC time, reason, per-target captured/existed state and skill counts, source commit | No | No |
+| `cskill install [--force]` | Clones the configured branch, validates the skill tree, and replaces the OpenCode, Claude, and AGY targets as one transaction | Yes, unless the install is skipped as already up to date | Creates an install snapshot unless the install is skipped |
+| `cskill restore BACKUP_ID` | Restores a validated snapshot by ID | Restores captured targets; leaves uncaptured targets unchanged | Creates a `pre-restore` safety snapshot |
+| `cskill help`, `cskill --help`, `cskill -h` | Prints usage and the command list | No | No |
+| `cskill` (no command) | Prints the `C-Skills` logo (animated on an interactive TTY, static otherwise) and exits `0` | No | No |
+
+Every command exits `0` on success and `1` on any error; there are no distinct
+exit codes per failure type. `install` accepts only an optional `--force`; any
+other or additional argument is rejected before configuration is even
+resolved. `restore` accepts exactly one `BACKUP_ID`, checked against the same
+snapshot ID pattern as the Bash installer
+(`^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$`); a missing or malformed ID is rejected
+with no file access. There is no interactive menu or restore picker: `restore`
+always requires an explicit `BACKUP_ID`.
+
+#### Idempotent install
+
+Like `install-skills.sh install`:
+
+- A repeat install of the already-recorded commit, repository, and branch is a
+  no-op when the live OpenCode target already matches the cloned source: no
+  new snapshot, no target change.
+- The same commit with drifted local targets is reinstalled with a warning,
+  `--force` or not.
+- A newer commit always installs and updates all three targets.
+- `install --force` reinstalls the same version even when nothing changed.
+
+### Shared configuration and environment variables
+
+`cskill` resolves configuration with the same precedence and the same
+environment variables as `install-skills.sh`: `OPENCODE_SKILLS_DIR`,
+`CLAUDE_SKILLS_DIR`, `AGY_SKILLS_DIR`, `OPENCODE_CONFIG_DIR`,
+`XDG_CONFIG_HOME`, `CLAUDE_CONFIG_DIR`, `SKILL_BACKUP_DIR`,
+`SKILL_INSTALLER_LOCK_FILE`, `SKILL_INSTALLER_STATE_FILE`,
+`SKILL_PACK_REPOSITORY_URL`, `SKILL_PACK_BRANCH`, and
+`SKILL_PACK_MIN_SKILL_COUNT`. See [Environment overrides](#environment-overrides)
+for defaults and rules. `cskill` applies the same absolute-path,
+`/skills`-suffix, overlap, symlink, and `.codegraph`-rejection checks before
+any mutation, plus one Go-only check: the lock path and state path must be
+different files.
+
+### Safety
+
+| Property | Behavior |
+|---|---|
+| Pre-mutation validation | Configuration, target, backup, lock, and state paths are validated before any snapshot or destination mutation, then revalidated once the install lock is held. |
+| Locking | `install` and `restore` take one non-blocking `flock` on the configured lock file; a second concurrent destructive operation fails immediately before any mutation. `install` holds the lock uninterrupted from cloning through the transaction and the installed-state write. `restore` releases the lock before writing installed state — a documented residual divergence (see Limitations). |
+| Transactional replacement | Targets are staged, snapshotted, and committed as one unit; a failure before commit rolls back from quarantined originals, and a target that did not previously exist is restored to being absent. |
+| Pre-restore safety snapshot | `restore` always creates a fresh `pre-restore` snapshot of the current state before applying the selected snapshot. |
+| Uncaptured targets | A target the selected snapshot did not capture is left completely unchanged by `restore`. |
+| Idempotent install | See above; a no-op install creates no snapshot and changes no target. |
+| Sanitized clone | Cloning uses temporary staging and never executes fetched content; the cloned tree is rejected if it contains symlinks, a `.codegraph` directory, or fewer than the configured minimum number of `SKILL.md` manifests. |
+| No implicit mutation | `restore` always requires an explicit `BACKUP_ID`; running `cskill` with no command only prints the logo. |
+| Animation gating | The logo animates only on an interactive TTY, and only when `NO_COLOR` is unset and `--static` was not passed; any other context prints the static logo. |
+
+### Interoperability with `install-skills.sh`
+
+`cskill` reads and writes the same on-disk formats as the Bash installer,
+without changing it:
+
+- **Snapshot metadata** — `cskill` parses both version 1 (implicit
+  OpenCode/Claude-only capture) and version 2 (explicit per-target
+  `captured`/`existed`/`skill_count`) metadata, with the same required and
+  forbidden keys, duplicate/unknown-key rejection, and captured/existed/count
+  consistency rules as the Bash installer. It writes only version 2 snapshots,
+  in the same key order as `create_snapshot`.
+- **Installed state** — `cskill` reads and writes `.installed-skills.state` in
+  the same `key=value` format as the Bash installer (`repository_url`,
+  `branch`, `source_commit`, `skill_count`, `installed_utc`), and falls back to
+  the newest valid `reason=install` snapshot when the state file is missing or
+  invalid.
+- **Cross-restore** — either installer can restore a snapshot the other
+  created, including absent-target and uncaptured-target semantics, and either
+  can read state the other wrote.
+
+This is proven with isolated `go test` fixtures that create snapshots, state,
+and skill trees with one implementation and restore or read them with the
+other, never against real skill directories: see
+`TestBashRestoresGoCreatedV2Snapshot`, `TestGoRestoresBashGeneratedV2Snapshot`,
+`TestGoRestoresBashLegacyV1CaptureSemantics` (`cmd/cskills/restore_test.go`),
+and `TestGoReadsBashWrittenInstalledState`,
+`TestBashStatusAcceptsGoWrittenInstalledState` (`cmd/cskills/state_interop_test.go`).
+
+### Known limitations and differences from `install-skills.sh`
+
+| Area | Difference |
+|---|---|
+| Extended attributes | `copyTree` does not copy xattrs (`cp -a` does); see `TestCopyTreeDoesNotPreserveExtendedAttributesLikeCpArchive`. Modes, timestamps, symlinks, and hardlinks are preserved. |
+| Ownership and ACLs | Not verified for a non-root user; `cskill` runs, and is expected to run, without root. |
+| Installed-state fallback | Stricter than Bash: `cskill` requires the fallback snapshot to pass full `ValidateSnapshot` checks, not only a valid source-commit line (`TestGoInstalledStateFallbackIsStricterThanBash`). |
+| Interactive restore | No menu or restore picker; `restore` always requires an explicit `BACKUP_ID`. |
+| No-command behavior | `cskill` with no command prints the logo and exits `0`; the Bash installer prints usage and exits `2` in the same headless situation. |
+| Install summary | `install` does not print the pre-upgrade skill change summary that `status` prints. |
+| Restore lock scope | `restore` writes the installed-state update after releasing the install lock, unlike `install`, which holds the lock through the state write. |
+
+### Verification
+
+```bash
+go build ./...
+go test ./...
+go vet ./...
+bash tests/test-installer.sh
+```
+
+`bash tests/test-installer.sh` is the unchanged Bash regression and
+interoperability gate; `cskill` does not modify `install-skills.sh` or its
+tests.
