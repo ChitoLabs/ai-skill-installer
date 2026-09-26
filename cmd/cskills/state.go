@@ -81,6 +81,48 @@ func SerializeInstalledState(state InstalledState) ([]byte, error) {
 		state.RepositoryURL, state.Branch, state.SourceCommit, state.SkillCount, state.InstalledUTC)), nil
 }
 
+// WriteInstalledState follows write_installed_state: it creates the parent
+// directory, refuses a state path that has become a symbolic link, and
+// publishes the serialized state atomically through a temporary file and
+// rename within the same directory so a concurrent reader never observes a
+// partially written file.
+func WriteInstalledState(statePath string, state InstalledState) error {
+	data, err := SerializeInstalledState(state)
+	if err != nil {
+		return err
+	}
+	parent := filepath.Dir(statePath)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return fmt.Errorf("create installed state parent: %w", err)
+	}
+	if info, err := os.Lstat(statePath); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("installer state path became a symbolic link: %s", statePath)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect installed state path: %w", err)
+	}
+	tempFile, err := os.CreateTemp(parent, ".installed-skills-state.*")
+	if err != nil {
+		return fmt.Errorf("create temporary installed state: %w", err)
+	}
+	tempPath := tempFile.Name()
+	if _, err := tempFile.Write(data); err != nil {
+		_ = tempFile.Close()
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("write temporary installed state: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("close temporary installed state: %w", err)
+	}
+	if err := os.Rename(tempPath, statePath); err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("publish installed state: %w", err)
+	}
+	return nil
+}
+
 // ResolveInstalledState mirrors resolve_installed_commit: a valid state file
 // takes precedence; otherwise it returns the newest valid install snapshot's
 // commit, skipping malformed, unsafe, or non-install snapshots.
