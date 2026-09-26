@@ -14,6 +14,7 @@ import (
 type stagedTarget struct {
 	Target     string
 	StagedPath string
+	Preserve   bool
 }
 
 type transactionHooks struct {
@@ -28,16 +29,56 @@ func runTransaction(cfg Configuration, replacements []stagedTarget) (string, err
 }
 
 func runTransactionWithHooks(cfg Configuration, replacements []stagedTarget, hooks transactionHooks) (string, error) {
+	return runTransactionWithOptions(cfg, replacements, "install", "unknown", hooks)
+}
+
+func runTransactionWithOptions(cfg Configuration, replacements []stagedTarget, snapshotReason, sourceCommit string, hooks transactionHooks) (string, error) {
+	return runTransactionWithPreparation(cfg, replacements, snapshotReason, sourceCommit, hooks, nil)
+}
+
+// runTransactionWithPreparation validates configuration and destination paths
+// before creating the shared installer lock, then revalidates and holds the
+// lock through preparation and commit/rollback. Restore supplies a preparation
+// callback so snapshot validation and staging happen only while locked.
+func runTransactionWithPreparation(cfg Configuration, replacements []stagedTarget, snapshotReason, sourceCommit string, hooks transactionHooks, prepare func() ([]stagedTarget, string, func(), error)) (string, error) {
+	if prepare != nil {
+		// The final replacements depend on snapshot metadata. Validate the
+		// configured destinations first using all-preserve placeholders; the
+		// complete replacements are validated again under the lock.
+		replacements = []stagedTarget{
+			{Target: cfg.OpenCodeTarget, Preserve: true},
+			{Target: cfg.ClaudeTarget, Preserve: true},
+			{Target: cfg.AgyTarget, Preserve: true},
+		}
+	}
 	if err := validateTransactionInputs(cfg, replacements); err != nil {
 		return "", err
 	}
+
 	lock, err := acquireInstallerLock(cfg.LockPath)
 	if err != nil {
 		return "", err
 	}
 	defer lock.Close()
 
-	id, err := createSnapshot(cfg, "install", "unknown", snapshotCreateHooks{})
+	if prepare != nil {
+		var cleanup func()
+		replacements, sourceCommit, cleanup, err = prepare()
+		if err != nil {
+			if cleanup != nil {
+				cleanup()
+			}
+			return "", err
+		}
+		if cleanup != nil {
+			defer cleanup()
+		}
+	}
+	if err := validateTransactionInputs(cfg, replacements); err != nil {
+		return "", err
+	}
+
+	id, err := createSnapshot(cfg, snapshotReason, sourceCommit, snapshotCreateHooks{})
 	if err != nil {
 		return "", fmt.Errorf("create transaction recovery snapshot: %w", err)
 	}
@@ -65,7 +106,7 @@ func runTransactionWithHooks(cfg Configuration, replacements []stagedTarget, hoo
 
 	for i, replacement := range replacements {
 		states[i].path = replacement.Target
-		if replacement.StagedPath == "" {
+		if replacement.Preserve || replacement.StagedPath == "" {
 			continue
 		}
 		parent := filepath.Dir(replacement.Target)
@@ -90,6 +131,9 @@ func runTransactionWithHooks(cfg Configuration, replacements []stagedTarget, hoo
 
 	for i := range states {
 		state := &states[i]
+		if replacements[i].Preserve {
+			continue
+		}
 		state.quarantine = state.path + ".transaction." + id
 		if _, err := os.Lstat(state.quarantine); err == nil {
 			return id, fmt.Errorf("transaction quarantine already exists: %s", state.quarantine)
@@ -108,6 +152,9 @@ func runTransactionWithHooks(cfg Configuration, replacements []stagedTarget, hoo
 		var rollbackErr error
 		for i := len(states) - 1; i >= 0; i-- {
 			state := &states[i]
+			if replacements[i].Preserve {
+				continue
+			}
 			if state.installed {
 				if err := os.RemoveAll(state.path); err != nil {
 					rollbackErr = errors.Join(rollbackErr, fmt.Errorf("remove failed target %s: %w", state.path, err))
@@ -135,6 +182,9 @@ func runTransactionWithHooks(cfg Configuration, replacements []stagedTarget, hoo
 
 	for i := range states {
 		state := &states[i]
+		if replacements[i].Preserve {
+			continue
+		}
 		if state.originalExists {
 			if err := os.Rename(state.path, state.quarantine); err != nil {
 				return rollback(fmt.Errorf("quarantine original %s: %w", state.path, err))
@@ -147,6 +197,9 @@ func runTransactionWithHooks(cfg Configuration, replacements []stagedTarget, hoo
 	}
 	for i := range states {
 		state := &states[i]
+		if replacements[i].Preserve {
+			continue
+		}
 		if state.staged != "" {
 			if err := os.Rename(state.staged, state.path); err != nil {
 				return rollback(fmt.Errorf("install staged target %s: %w", state.path, err))
@@ -158,6 +211,9 @@ func runTransactionWithHooks(cfg Configuration, replacements []stagedTarget, hoo
 		}
 	}
 	for i, replacement := range replacements {
+		if replacement.Preserve {
+			continue
+		}
 		if err := verifyTransactionState(replacement.Target, states[i].expectedFingerprint, replacement.StagedPath != ""); err != nil {
 			return rollback(fmt.Errorf("verify committed target %s: %w", replacement.Target, err))
 		}
@@ -269,6 +325,12 @@ func validateTransactionInputs(cfg Configuration, replacements []stagedTarget) e
 		}
 		if replacements[i].Target != target {
 			return fmt.Errorf("replacement %d does not match its configured target", i)
+		}
+		if replacements[i].Preserve {
+			if replacements[i].StagedPath != "" {
+				return fmt.Errorf("preserved target %d must not have a staged replacement", i)
+			}
+			continue
 		}
 		if replacements[i].StagedPath != "" {
 			stageInfo, err := os.Lstat(replacements[i].StagedPath)

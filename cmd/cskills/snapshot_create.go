@@ -264,8 +264,10 @@ func generateSnapshotID(now time.Time) (string, error) {
 }
 
 // copyTree preserves directory structure, file bytes and modes, modification
-// times, and symlink text. WalkDir does not follow symlinks; special files fail
-// explicitly instead of being silently omitted or accidentally blocking reads.
+// times, symlink text, and hard-link relationships among files copied from
+// the same source tree (matching cp -a's --preserve=links). WalkDir does not
+// follow symlinks; special files fail explicitly instead of being silently
+// omitted or accidentally blocking reads.
 func copyTree(destination, source string) error {
 	if err := os.Mkdir(destination, 0o700); err != nil {
 		return err
@@ -276,6 +278,7 @@ func copyTree(destination, source string) error {
 		mod  time.Time
 	}
 	var directories []directory
+	hardlinkDestinations := make(map[[2]uint64]string)
 	err := filepath.WalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -312,6 +315,12 @@ func copyTree(destination, source string) error {
 		}
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("unsupported special file in source tree: %s", path)
+		}
+		if key, hasMultipleLinks, ok := hardlinkIdentity(info); ok && hasMultipleLinks {
+			if existing, seen := hardlinkDestinations[key]; seen {
+				return os.Link(existing, destinationPath)
+			}
+			hardlinkDestinations[key] = destinationPath
 		}
 		if err := copyRegularFile(destinationPath, path, info); err != nil {
 			return err
