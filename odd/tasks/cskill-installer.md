@@ -100,5 +100,11 @@ Forecast: five implementation slices (CSK-001–CSK-005), each intended to be in
 - **CSK-005c — README (route: delegated writer; trigger: preparation reading of code + Bash):**
   - [x] README section `## Go installer (\`cskill\`)` added in commit `c1c35a6` (139 lines): build/run, commands table, idempotent install, shared env vars, safety table, interoperability with test names, limitations table, verification. Help output captured from an isolated build; claims cross-checked against code. Passive doc → structural readback by parent (mtime claim confirmed at `snapshot_create.go:338,372`). Stray `cskills` build binary left by the writer in repo root was removed.
 - **Feature status (2026-09-26):** CSK-001–CSK-005 implemented; all acceptance criteria covered, with documented limitations (xattrs, ownership/ACL, stricter state fallback, no interactive menu, no-command exit 0, install summary, restore lock scope). Commits after the last native review (`5020209`, `250522d`, `1ace73d`, `c234ccf`, `5e79991`, `c1c35a6`) are `disabled/unmanaged` (RDD off); verification was writer self-checks + independent verifiers.
-- **Next step:** User decision — push and open the `stacked-to-main` PR chain (5 slices listed above), or address residual divergences first.
+- **Delivered (2026-09-26, user-authorized push + PRs):** stacked-to-main chain, all slices declared `size:exception` in the PR body (no repo label exists; one slicing pass — 9 of 14 commits exceed 400 lines alone; user chose 5 PRs). Each slice snapshot passed `go vet`, `go test -count=1`, and `bash tests/test-installer.sh` independently.
+  - #1 `feat/cskill-01-validation` → `main` (`fd19121`–`83dc3a1`, +1247/−0)
+  - #2 `feat/cskill-02-snapshots` → #1 (`685b00b`–`9ff49a9`, +1719/−4)
+  - #3 `feat/cskill-03-transaction` → #2 (`9ae0fbe`–`ea137aa`, +771/−2)
+  - #4 `feat/cskill-04-interop` → #3 (`5020209`–`1ace73d`, +1088/−6)
+  - #5 `feat/cskill-installer` → #4 (`c234ccf`–HEAD, CLI + README + task doc)
+- **Next step:** Human review and merge in order #1 → #5; after each merge, retarget the next PR to `main` and rebase if GitHub shows a polluted diff. Optional follow-up: residual divergences (install pre-upgrade summary, restore state write under lock).
 - **Previous next step (superseded):** CSK-005b — public CLI `status`/`list`/`restore`/`install` with tests; CSK-005c — README commands, safety, compatibility, and limitations.
