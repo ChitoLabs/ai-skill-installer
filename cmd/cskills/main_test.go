@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -62,18 +65,22 @@ func TestDispatchCommand(t *testing.T) {
 		wantError  string
 	}{
 		{name: "help command", args: []string{"help"}, wantOutput: "Usage: cskill"},
-		{name: "install is explicitly unavailable", args: []string{"install"}, wantError: `command "install" is not implemented yet`},
-		{name: "status is explicitly unavailable", args: []string{"status"}, wantError: `command "status" is not implemented yet`},
-		{name: "list is explicitly unavailable", args: []string{"list"}, wantError: `command "list" is not implemented yet`},
-		{name: "restore is explicitly unavailable", args: []string{"restore"}, wantError: `command "restore" is not implemented yet`},
+		{name: "help rejects arguments", args: []string{"help", "extra"}, wantError: `unexpected arguments for "help"`},
 		{name: "unknown command", args: []string{"remove"}, wantError: `unknown command "remove"`},
-		{name: "extra command arguments", args: []string{"status", "--verbose"}, wantError: `unexpected arguments for "status"`},
+		{name: "status rejects extra arguments", args: []string{"status", "--verbose"}, wantError: `unexpected arguments for "status"`},
+		{name: "list rejects extra arguments", args: []string{"list", "--verbose"}, wantError: `unexpected arguments for "list"`},
+		{name: "install rejects unknown flag", args: []string{"install", "--verbose"}, wantError: "install accepts only an optional --force argument"},
+		{name: "install rejects extra arguments", args: []string{"install", "--force", "extra"}, wantError: "install accepts only an optional --force argument"},
+		{name: "restore rejects extra arguments", args: []string{"restore", "one", "two"}, wantError: "restore accepts at most one BACKUP_ID"},
+		{name: "restore without ID reports the gap before touching configuration", args: []string{"restore"}, wantError: "restore requires a BACKUP_ID"},
+		{name: "restore rejects an unsafe backup ID", args: []string{"restore", "../evil"}, wantError: "unsafe backup ID"},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			var output bytes.Buffer
-			err := dispatchCommand(test.args, &output)
+			cfg, root := restoreFixture(t)
+			var output, errOutput bytes.Buffer
+			err := dispatchCommand(test.args, &output, &errOutput, commandEnvironment(cfg), root)
 			if test.wantError != "" {
 				if err == nil || !strings.Contains(err.Error(), test.wantError) {
 					t.Fatalf("error = %v, want text %q", err, test.wantError)
@@ -93,6 +100,46 @@ func TestDispatchCommand(t *testing.T) {
 	}
 }
 
+// commandEnvironment rebuilds the environment map a fixture's Configuration
+// was resolved from, so dispatchCommand can be exercised end-to-end without
+// touching the real process environment.
+func commandEnvironment(cfg Configuration) map[string]string {
+	// A dedicated sibling directory keeps clone staging isolated from HOME's
+	// protected subtree (e.g. .config/opencode/commands), which the parent
+	// fixture root also contains.
+	tmpRoot := filepath.Join(filepath.Dir(cfg.BackupRoot), "tmp")
+	_ = os.MkdirAll(tmpRoot, 0o700)
+	return map[string]string{
+		"HOME":                       cfg.HomeDir,
+		"TMPDIR":                     tmpRoot,
+		"OPENCODE_SKILLS_DIR":        cfg.OpenCodeTarget,
+		"CLAUDE_SKILLS_DIR":          cfg.ClaudeTarget,
+		"AGY_SKILLS_DIR":             cfg.AgyTarget,
+		"SKILL_BACKUP_DIR":           cfg.BackupRoot,
+		"SKILL_INSTALLER_LOCK_FILE":  cfg.LockPath,
+		"SKILL_INSTALLER_STATE_FILE": cfg.StatePath,
+		"SKILL_PACK_REPOSITORY_URL":  cfg.RepositoryURL,
+		"SKILL_PACK_BRANCH":          cfg.Branch,
+		"SKILL_PACK_MIN_SKILL_COUNT": strconv.Itoa(cfg.MinimumSkillCount),
+	}
+}
+
+func TestDispatchCommandWithNoArgumentsTouchesNothing(t *testing.T) {
+	cfg, root := restoreFixture(t)
+	var output, errOutput bytes.Buffer
+	if err := dispatchCommand(nil, &output, &errOutput, commandEnvironment(cfg), root); err != nil {
+		t.Fatalf("dispatchCommand() error = %v", err)
+	}
+	if output.Len() != 0 || errOutput.Len() != 0 {
+		t.Fatalf("no-command dispatch produced output: out=%q err=%q", output.String(), errOutput.String())
+	}
+	for _, path := range []string{cfg.BackupRoot, cfg.LockPath, cfg.StatePath} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Errorf("no-command dispatch touched managed path %s (err=%v)", path, err)
+		}
+	}
+}
+
 func TestRunKeepsLogoStaticOutsideInteractiveAnimation(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -107,8 +154,9 @@ func TestRunKeepsLogoStaticOutsideInteractiveAnimation(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			cfg, root := restoreFixture(t)
 			var output, errorOutput bytes.Buffer
-			err := run(context.Background(), test.args, &output, &errorOutput, test.isTerminal, test.noColor)
+			err := run(context.Background(), test.args, &output, &errorOutput, test.isTerminal, test.noColor, commandEnvironment(cfg), root)
 			if err != nil {
 				t.Fatalf("run() error = %v", err)
 			}
@@ -122,30 +170,58 @@ func TestRunKeepsLogoStaticOutsideInteractiveAnimation(t *testing.T) {
 	}
 }
 
+// TestRunDoesNotAnimateInstallerCommands proves that dispatching a real
+// installer command never emits animation control bytes, whether the command
+// succeeds (list on an empty backup root) or fails fast on invalid usage
+// (restore/install without arguments touch no managed path either way).
 func TestRunDoesNotAnimateInstallerCommands(t *testing.T) {
-	for _, command := range []string{"install", "status", "list", "restore"} {
-		t.Run(command, func(t *testing.T) {
+	tests := []struct {
+		name      string
+		args      []string
+		wantError string
+	}{
+		{name: "list", args: []string{"list"}},
+		{name: "restore without ID", args: []string{"restore"}, wantError: "restore requires a BACKUP_ID"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, root := restoreFixture(t)
 			var output, errorOutput bytes.Buffer
-			err := run(context.Background(), []string{command}, &output, &errorOutput, true, false)
-			if err == nil || !strings.Contains(err.Error(), "not implemented yet") {
-				t.Fatalf("run() error = %v, want clear unsupported-command error", err)
+			err := run(context.Background(), test.args, &output, &errorOutput, true, false, commandEnvironment(cfg), root)
+			if test.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantError) {
+					t.Fatalf("run() error = %v, want text %q", err, test.wantError)
+				}
+			} else if err != nil {
+				t.Fatalf("run() error = %v", err)
 			}
-			if output.Len() != 0 {
-				t.Errorf("installer command output = %q, want no misleading output", output.String())
+			if strings.Contains(output.String(), "\x1b") || strings.Contains(output.String(), "\r") {
+				t.Errorf("installer command output animated: %q", output.String())
 			}
 		})
+	}
+}
+
+func TestPrintHelpDescribesEveryCommand(t *testing.T) {
+	var out bytes.Buffer
+	printHelp(&out)
+	for _, want := range []string{"status", "list", "install [--force]", "restore BACKUP_ID", "help"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("help text missing %q:\n%s", want, out.String())
+		}
 	}
 }
 
 func TestRunHelpFlagUsesCommandHelp(t *testing.T) {
 	for _, flag := range []string{"-help", "--help", "-h"} {
 		t.Run(flag, func(t *testing.T) {
+			cfg, root := restoreFixture(t)
 			var output, errorOutput bytes.Buffer
-			if err := run(context.Background(), []string{flag}, &output, &errorOutput, true, false); err != nil {
+			if err := run(context.Background(), []string{flag}, &output, &errorOutput, true, false, commandEnvironment(cfg), root); err != nil {
 				t.Fatalf("run() error = %v", err)
 			}
-			if !strings.Contains(output.String(), "Installer commands are unavailable") {
-				t.Errorf("help output = %q, want explicit implementation status", output.String())
+			if !strings.Contains(output.String(), "install and restore always require an explicit command and argument") {
+				t.Errorf("help output = %q, want explicit no-implicit-mutation guarantee", output.String())
 			}
 			if strings.Contains(output.String(), "\r") {
 				t.Errorf("help unexpectedly animated: %q", output.String())

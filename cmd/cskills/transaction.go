@@ -33,14 +33,20 @@ func runTransactionWithHooks(cfg Configuration, replacements []stagedTarget, hoo
 }
 
 func runTransactionWithOptions(cfg Configuration, replacements []stagedTarget, snapshotReason, sourceCommit string, hooks transactionHooks) (string, error) {
-	return runTransactionWithPreparation(cfg, replacements, snapshotReason, sourceCommit, hooks, nil)
+	return runTransactionWithPreparation(cfg, replacements, snapshotReason, sourceCommit, hooks, nil, nil)
 }
 
 // runTransactionWithPreparation validates configuration and destination paths
 // before creating the shared installer lock, then revalidates and holds the
 // lock through preparation and commit/rollback. Restore supplies a preparation
 // callback so snapshot validation and staging happen only while locked.
-func runTransactionWithPreparation(cfg Configuration, replacements []stagedTarget, snapshotReason, sourceCommit string, hooks transactionHooks, prepare func() ([]stagedTarget, string, func(), error)) (string, error) {
+// Install additionally supplies postCommit so it can clone the source and
+// record the installed-state file under the same held lock, mirroring
+// install-skills.sh's single acquire_installer_lock call spanning clone,
+// run_transaction, and write_installed_state (install-skills.sh:1413-1489).
+// postCommit runs only on a fully clean commit, immediately before the lock
+// is released.
+func runTransactionWithPreparation(cfg Configuration, replacements []stagedTarget, snapshotReason, sourceCommit string, hooks transactionHooks, prepare func() ([]stagedTarget, string, func(), error), postCommit func(sourceCommit, snapshotID string) error) (string, error) {
 	if prepare != nil {
 		// The final replacements depend on snapshot metadata. Validate the
 		// configured destinations first using all-preserve placeholders; the
@@ -245,6 +251,11 @@ func runTransactionWithPreparation(cfg Configuration, replacements []stagedTarge
 	}
 	if cleanupErr != nil {
 		return id, fmt.Errorf("transaction committed; recovery snapshot %s retained: %w", id, cleanupErr)
+	}
+	if postCommit != nil {
+		if err := postCommit(sourceCommit, id); err != nil {
+			return id, err
+		}
 	}
 	return id, nil
 }

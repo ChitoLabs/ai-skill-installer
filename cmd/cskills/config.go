@@ -26,7 +26,10 @@ type Configuration struct {
 	BackupRoot        string
 	LockPath          string
 	StatePath         string
-	validated         bool
+	// HomeDir is the resolved HOME directory used to validate paths (such as
+	// git clone staging roots) that are not part of the managed targets.
+	HomeDir   string
+	validated bool
 }
 
 // ResolveConfiguration applies the installer's environment precedence and
@@ -100,6 +103,7 @@ func ResolveConfiguration(environment map[string]string, scriptDir string) (Conf
 		RepositoryURL:     repository,
 		Branch:            branch,
 		MinimumSkillCount: minimum,
+		HomeDir:           home,
 	}
 	paths := []struct {
 		input string

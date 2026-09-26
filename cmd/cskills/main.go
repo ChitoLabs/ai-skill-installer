@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -28,13 +30,49 @@ func main() {
 		os.Exit(1)
 	}
 	_, noColor := os.LookupEnv("NO_COLOR")
-	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr, info.Mode()&os.ModeCharDevice != 0, noColor); err != nil {
+	scriptDir, err := scriptDirectory()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr, info.Mode()&os.ModeCharDevice != 0, noColor, environFromOS(), scriptDir); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, args []string, out, errOut io.Writer, isTerminal, noColor bool) error {
+// scriptDirectory mirrors install-skills.sh's SCRIPT_DIR: the resolved
+// directory containing the running executable, used as the default base for
+// managed backup/lock/state paths when their environment overrides are unset.
+func scriptDirectory() (string, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("resolve executable path: %w", err)
+	}
+	resolved, err := filepath.EvalSymlinks(executable)
+	if err != nil {
+		return "", fmt.Errorf("resolve executable path: %w", err)
+	}
+	return filepath.Dir(resolved), nil
+}
+
+// environFromOS converts the process environment into the map[string]string
+// shape ResolveConfiguration expects, allowing tests to inject an isolated
+// environment instead.
+func environFromOS() map[string]string {
+	raw := os.Environ()
+	environment := make(map[string]string, len(raw))
+	for _, entry := range raw {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		environment[key] = value
+	}
+	return environment
+}
+
+func run(ctx context.Context, args []string, out, errOut io.Writer, isTerminal, noColor bool, environment map[string]string, scriptDir string) error {
 	flags := flag.NewFlagSet("cskill", flag.ContinueOnError)
 	flags.SetOutput(errOut)
 	static := flags.Bool("static", false, "print the logo without animation or color")
@@ -49,7 +87,7 @@ func run(ctx context.Context, args []string, out, errOut io.Writer, isTerminal, 
 		printHelp(out)
 		return nil
 	}
-	if err := dispatchCommand(flags.Args(), out); err != nil {
+	if err := dispatchCommand(flags.Args(), out, errOut, environment, scriptDir); err != nil {
 		return err
 	}
 	if len(flags.Args()) > 0 {
@@ -64,22 +102,38 @@ func run(ctx context.Context, args []string, out, errOut io.Writer, isTerminal, 
 	return play(ctx, out, true)
 }
 
-func dispatchCommand(args []string, out io.Writer) error {
+// dispatchCommand routes an explicit command to its handler. With no command
+// it returns immediately without touching configuration, so the animated or
+// static logo path in run never performs installer work.
+func dispatchCommand(args []string, out, errOut io.Writer, environment map[string]string, scriptDir string) error {
 	if len(args) == 0 {
 		return nil
 	}
-	if len(args) > 1 {
-		return fmt.Errorf("unexpected arguments for %q; run 'cskill help' for usage", args[0])
-	}
+	command, rest := args[0], args[1:]
 
-	switch args[0] {
+	switch command {
 	case "help":
+		if len(rest) != 0 {
+			return fmt.Errorf("unexpected arguments for %q; run 'cskill help' for usage", command)
+		}
 		printHelp(out)
 		return nil
-	case "install", "status", "list", "restore":
-		return fmt.Errorf("command %q is not implemented yet", args[0])
+	case "status":
+		if len(rest) != 0 {
+			return fmt.Errorf("unexpected arguments for %q; run 'cskill help' for usage", command)
+		}
+		return runStatusCommand(out, environment, scriptDir)
+	case "list":
+		if len(rest) != 0 {
+			return fmt.Errorf("unexpected arguments for %q; run 'cskill help' for usage", command)
+		}
+		return runListCommand(out, errOut, environment, scriptDir)
+	case "install":
+		return runInstallCommand(rest, out, environment, scriptDir)
+	case "restore":
+		return runRestoreCommand(rest, out, environment, scriptDir)
 	default:
-		return fmt.Errorf("unknown command %q; run 'cskill help' for usage", args[0])
+		return fmt.Errorf("unknown command %q; run 'cskill help' for usage", command)
 	}
 }
 
@@ -90,13 +144,17 @@ With no command, print the C-Skills logo. Animation is shown only on a terminal
 when NO_COLOR is unset and --static is not specified.
 
 Commands:
-  help      Show this help
-  install   Not implemented yet
-  status    Not implemented yet
-  list      Not implemented yet
-  restore   Not implemented yet
+  help                Show this help
+  status              Compare the installed skill-pack version against the
+                       configured remote branch
+  list                List managed backup snapshots
+  install [--force]   Clone, validate, and install the configured skill pack
+                       into the OpenCode, Claude, and AGY targets
+  restore BACKUP_ID   Restore a managed snapshot by ID (required; there is no
+                       interactive picker)
 
-Installer commands are unavailable in this version; no files are changed.
+install and restore always require an explicit command and argument; no
+command ever performs a mutation implicitly, including with no arguments.
 `)
 }
 
