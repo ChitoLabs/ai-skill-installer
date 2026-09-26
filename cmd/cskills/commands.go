@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -23,19 +24,21 @@ func resolveCommandConfiguration(environment map[string]string, scriptDir string
 	return cfg, nil
 }
 
-// runStatusCommand mirrors run_status: it reports the installed version
-// against the remote branch HEAD. Unlike Bash, it does not perform a full
-// clone to render a per-skill added/modified/removed diff; that reporting
-// depth is intentionally out of scope for this slice (see task report).
+// runStatusCommand mirrors run_status (install-skills.sh:1351-1409): it
+// reports the installed version against the remote branch HEAD and, like
+// Bash, clones the source to render a per-skill added/modified/removed diff
+// (summarize_skill_changes, install-skills.sh:624-676) and to warn about
+// local drift when the installed commit already matches the remote one
+// (targets_match_source, install-skills.sh:678-683).
 func runStatusCommand(out io.Writer, environment map[string]string, scriptDir string) error {
 	cfg, err := resolveCommandConfiguration(environment, scriptDir)
 	if err != nil {
 		return err
 	}
-	return runStatus(cfg, out)
+	return runStatus(cfg, environment, out)
 }
 
-func runStatus(cfg Configuration, out io.Writer) error {
+func runStatus(cfg Configuration, environment map[string]string, out io.Writer) error {
 	ctx := context.Background()
 	remoteCommit, err := resolveRemoteHead(ctx, cfg.RepositoryURL, cfg.Branch)
 	if err != nil {
@@ -70,11 +73,57 @@ func runStatus(cfg Configuration, out io.Writer) error {
 		fmt.Fprintln(out, "Warning: configured branch differs from the last install; comparison is by commit only.")
 	}
 
+	reference := referenceTarget(cfg)
+
 	if remoteCommit == state.SourceCommit {
-		fmt.Fprintln(out, "Already up to date: installed version matches the remote version.")
+		if reference == "" {
+			fmt.Fprintln(out, "Already up to date: installed version matches the remote version.")
+			return nil
+		}
+		skillsDir, _, cleanup, err := cloneSkillSource(ctx, cfg, environment)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		if _, err := ValidateSkillTree(skillsDir, cfg.MinimumSkillCount, 0); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Skill diff against %s:\n", reference)
+		summary, err := summarizeSkillChanges(reference, skillsDir)
+		if err != nil {
+			return err
+		}
+		writeSkillChangeSummary(out, summary)
+		if targetsMatchSource(skillsDir, reference) {
+			fmt.Fprintln(out, "Already up to date: installed version matches the remote version.")
+		} else {
+			fmt.Fprintln(out, "Warning: same commit as installed, but local targets differ (manual drift). Re-run install to restore the canonical tree.")
+		}
 		return nil
 	}
+
 	fmt.Fprintf(out, "A newer skill-pack version is available: %s -> %s\n", state.SourceCommit, remoteCommit)
+	skillsDir, commit, cleanup, err := cloneSkillSource(ctx, cfg, environment)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	count, err := ValidateSkillTree(skillsDir, cfg.MinimumSkillCount, 0)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "Source commit: %s\n", commit)
+	fmt.Fprintf(out, "Validated skills: %d\n", count)
+	if reference != "" {
+		fmt.Fprintf(out, "Skill diff against %s:\n", reference)
+		summary, err := summarizeSkillChanges(reference, skillsDir)
+		if err != nil {
+			return err
+		}
+		writeSkillChangeSummary(out, summary)
+	} else {
+		fmt.Fprintf(out, "No installed targets found; all %d skills would be new.\n", count)
+	}
 	fmt.Fprintln(out, "Run 'cskill install' to update.")
 	return nil
 }
@@ -167,10 +216,9 @@ func printSnapshotSummary(out io.Writer, metadata SnapshotMetadata) {
 		openCodeCount, claudeCount, agyCount, metadata.SourceCommit)
 }
 
-// runInstallCommand mirrors run_install's core mechanics: clone, validate,
-// stage, transact, and record installed state. It always performs a fresh
-// install rather than replicating Bash's already-up-to-date short-circuit;
-// see the task report for that scoped-out product decision.
+// runInstallCommand mirrors run_install (install-skills.sh:1411-1493): lock,
+// clone, validate, skip an idempotent reinstall (targets_match_source,
+// install-skills.sh:1425-1440), stage, transact, and record installed state.
 func runInstallCommand(args []string, out io.Writer, environment map[string]string, scriptDir string) error {
 	force := false
 	switch len(args) {
@@ -191,56 +239,103 @@ func runInstallCommand(args []string, out io.Writer, environment map[string]stri
 	return runInstall(cfg, force, environment, out)
 }
 
+// errInstallAlreadyUpToDate signals, from inside the install preparation
+// callback, that the configured commit/repository/branch already match the
+// installed state and the live targets already match the cloned source
+// (targets_match_source), so run_install's install-skills.sh:1429 skip
+// applies: no snapshot, no transaction, and no state write.
+var errInstallAlreadyUpToDate = errors.New("skill pack already up to date")
+
+// runInstall mirrors run_install (install-skills.sh:1411-1493). The clone,
+// idempotence check, and skill-tree validation all happen inside the
+// preparation callback so they run only after the installer lock is
+// acquired and it stays held, uninterrupted, through the transaction and
+// the installed-state write (install-skills.sh:1413-1414, 1489), instead of
+// acquiring the lock a second time.
 func runInstall(cfg Configuration, force bool, environment map[string]string, out io.Writer) error {
 	ctx := context.Background()
-	skillsDir, commit, cleanup, err := cloneSkillSource(ctx, cfg, environment)
+	var sourceCommit string
+	var skillCount int
+
+	prepare := func() ([]stagedTarget, string, func(), error) {
+		skillsDir, commit, cleanup, err := cloneSkillSource(ctx, cfg, environment)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		count, err := ValidateSkillTree(skillsDir, cfg.MinimumSkillCount, 0)
+		if err != nil {
+			cleanup()
+			return nil, "", nil, err
+		}
+		sourceCommit = commit
+		skillCount = count
+		fmt.Fprintf(out, "Source commit: %s\n", commit)
+		fmt.Fprintf(out, "Validated skills: %d\n", count)
+		if force {
+			fmt.Fprintln(out, "Force reinstall requested; proceeding regardless of the currently installed version.")
+		}
+
+		installedState, stateErr := ResolveInstalledState(cfg.StatePath, cfg.BackupRoot)
+		sameVersion := stateErr == nil &&
+			installedState.SourceCommit == commit &&
+			installedState.RepositoryURL == cfg.RepositoryURL &&
+			installedState.Branch == cfg.Branch
+		if sameVersion {
+			reference := referenceTarget(cfg)
+			if reference != "" {
+				if targetsMatchSource(skillsDir, reference) {
+					if !force {
+						cleanup()
+						return nil, "", nil, errInstallAlreadyUpToDate
+					}
+				} else {
+					fmt.Fprintln(out, "Warning: same commit as installed, but local targets differ (manual drift). Proceeding with reinstall.")
+				}
+			}
+		}
+
+		replacements := []stagedTarget{
+			{Target: cfg.OpenCodeTarget, StagedPath: skillsDir},
+			{Target: cfg.ClaudeTarget, StagedPath: skillsDir},
+			{Target: cfg.AgyTarget, StagedPath: skillsDir},
+		}
+		return replacements, commit, cleanup, nil
+	}
+
+	postCommit := func(commit, _ string) error {
+		state := InstalledState{
+			RepositoryURL: cfg.RepositoryURL,
+			Branch:        cfg.Branch,
+			SourceCommit:  commit,
+			SkillCount:    strconv.Itoa(skillCount),
+			InstalledUTC:  time.Now().UTC().Format("2006-01-02T15:04:05Z"),
+		}
+		if err := WriteInstalledState(cfg.StatePath, state); err != nil {
+			return fmt.Errorf("install committed; installed state not recorded: %w", err)
+		}
+		return nil
+	}
+
+	snapshotID, err := runTransactionWithPreparation(cfg, nil, "install", "unknown", transactionHooks{}, prepare, postCommit)
 	if err != nil {
+		if errors.Is(err, errInstallAlreadyUpToDate) {
+			fmt.Fprintf(out, "Already up to date: version %s is installed in all targets.\n", sourceCommit)
+			fmt.Fprintln(out, "Use 'cskill install --force' to reinstall the same version.")
+			return nil
+		}
 		return err
-	}
-	defer cleanup()
-
-	count, err := ValidateSkillTree(skillsDir, cfg.MinimumSkillCount, 0)
-	if err != nil {
-		return err
-	}
-
-	fmt.Fprintf(out, "Source commit: %s\n", commit)
-	fmt.Fprintf(out, "Validated skills: %d\n", count)
-	if force {
-		fmt.Fprintln(out, "Force reinstall requested; proceeding regardless of the currently installed version.")
-	}
-
-	replacements := []stagedTarget{
-		{Target: cfg.OpenCodeTarget, StagedPath: skillsDir},
-		{Target: cfg.ClaudeTarget, StagedPath: skillsDir},
-		{Target: cfg.AgyTarget, StagedPath: skillsDir},
-	}
-	snapshotID, err := runTransactionWithOptions(cfg, replacements, "install", commit, transactionHooks{})
-	if err != nil {
-		return err
-	}
-
-	state := InstalledState{
-		RepositoryURL: cfg.RepositoryURL,
-		Branch:        cfg.Branch,
-		SourceCommit:  commit,
-		SkillCount:    strconv.Itoa(count),
-		InstalledUTC:  time.Now().UTC().Format("2006-01-02T15:04:05Z"),
-	}
-	if err := WriteInstalledState(cfg.StatePath, state); err != nil {
-		return fmt.Errorf("install committed; installed state not recorded: %w", err)
 	}
 
 	fmt.Fprintf(out, "Backup snapshot: %s\n", snapshotID)
-	fmt.Fprintf(out, "Installed %d skills from commit %s into OpenCode, Claude, and AGY.\n", count, commit)
+	fmt.Fprintf(out, "Installed %d skills from commit %s into OpenCode, Claude, and AGY.\n", skillCount, sourceCommit)
 	fmt.Fprintln(out, "This replacement removed existing skills from all three directories. Restart OpenCode, Claude, and AGY so they reload the installed skills.")
 	return nil
 }
 
 // runRestoreCommand mirrors main's restore branch and run_restore: it
-// requires an explicit, pattern-safe BACKUP_ID. Unlike Bash, it never falls
-// back to an interactive TTY picker (menu/interactive_restore); see the task
-// report for that scoped-out product decision.
+// requires an explicit, pattern-safe BACKUP_ID. This is an intentional
+// product difference from Bash: interactive restore (menu/interactive_restore)
+// is not provided, so restore always requires an explicit BACKUP_ID.
 func runRestoreCommand(args []string, out io.Writer, environment map[string]string, scriptDir string) error {
 	if len(args) > 1 {
 		return fmt.Errorf("restore accepts at most one BACKUP_ID")

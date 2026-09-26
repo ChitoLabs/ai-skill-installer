@@ -17,7 +17,7 @@ func TestRunStatusReportsNoInstallAndRemoteVersion(t *testing.T) {
 	cfg.Branch = "main"
 
 	var out bytes.Buffer
-	if err := runStatus(cfg, &out); err != nil {
+	if err := runStatus(cfg, commandEnvironment(cfg), &out); err != nil {
 		t.Fatalf("runStatus() error = %v", err)
 	}
 	if !strings.Contains(out.String(), "Installed version: none") {
@@ -51,7 +51,7 @@ func TestGoInstallFromLocalRepositoryIsAcceptedByBashStatus(t *testing.T) {
 	}
 
 	var statusOut bytes.Buffer
-	if err := runStatus(cfg, &statusOut); err != nil {
+	if err := runStatus(cfg, commandEnvironment(cfg), &statusOut); err != nil {
 		t.Fatalf("runStatus() error = %v", err)
 	}
 	if !strings.Contains(statusOut.String(), "Already up to date") {
@@ -94,8 +94,9 @@ func TestRunInstallLockContentionDoesNotMutate(t *testing.T) {
 	}
 	defer lock.Close()
 
+	environment := commandEnvironment(cfg)
 	var out bytes.Buffer
-	if err := runInstall(cfg, false, commandEnvironment(cfg), &out); !errors.Is(err, errInstallerLockContended) {
+	if err := runInstall(cfg, false, environment, &out); !errors.Is(err, errInstallerLockContended) {
 		t.Fatalf("runInstall() error = %v, want lock contention", err)
 	}
 	for _, target := range targets {
@@ -109,6 +110,18 @@ func TestRunInstallLockContentionDoesNotMutate(t *testing.T) {
 	}
 	if _, err := os.Lstat(cfg.BackupRoot); !os.IsNotExist(err) {
 		t.Errorf("install created a backup snapshot while the lock was contended")
+	}
+	// Lock contention must fail before clone_repository's Go equivalent ever
+	// runs (install-skills.sh:1413-1414: acquire_installer_lock precedes
+	// clone_repository), so no clone staging directory should exist.
+	stagingEntries, err := os.ReadDir(environment["TMPDIR"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range stagingEntries {
+		if strings.HasPrefix(entry.Name(), "cskill-installer.") {
+			t.Errorf("install cloned the source before the lock was acquired: found staging dir %s", entry.Name())
+		}
 	}
 }
 
@@ -233,5 +246,222 @@ func TestRunRestoreRejectsInvalidIDWithoutMutation(t *testing.T) {
 	}
 	if _, err := os.Lstat(cfg.StatePath); !os.IsNotExist(err) {
 		t.Errorf("invalid restore wrote installed state")
+	}
+}
+
+func TestRunInstallIsIdempotentAndForceReinstalls(t *testing.T) {
+	cfg, root := restoreFixture(t)
+	repository := createLocalSkillRepository(t, root)
+	cfg.RepositoryURL = "file://" + repository
+	cfg.Branch = "main"
+	cfg.MinimumSkillCount = 1
+	environment := commandEnvironment(cfg)
+	targets := []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget}
+
+	var out bytes.Buffer
+	if err := runInstall(cfg, false, environment, &out); err != nil {
+		t.Fatalf("first runInstall() error = %v\n%s", err, out.String())
+	}
+	firstSnapshots, err := os.ReadDir(cfg.BackupRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeState, err := os.ReadFile(cfg.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := make(map[string][32]byte, len(targets))
+	for _, target := range targets {
+		fingerprint, err := fingerprintTree(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[target] = fingerprint
+	}
+
+	out.Reset()
+	if err := runInstall(cfg, false, environment, &out); err != nil {
+		t.Fatalf("second runInstall() error = %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "Already up to date") {
+		t.Errorf("second install output = %q, want an already-up-to-date message", out.String())
+	}
+	secondSnapshots, err := os.ReadDir(cfg.BackupRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secondSnapshots) != len(firstSnapshots) {
+		t.Errorf("no-op install created a new snapshot: before=%d after=%d", len(firstSnapshots), len(secondSnapshots))
+	}
+	afterState, err := os.ReadFile(cfg.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterState) != string(beforeState) {
+		t.Errorf("no-op install changed installed state:\nbefore=%s\nafter=%s", beforeState, afterState)
+	}
+	for _, target := range targets {
+		fingerprint, err := fingerprintTree(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fingerprint != before[target] {
+			t.Errorf("no-op install mutated target %s", target)
+		}
+	}
+
+	out.Reset()
+	if err := runInstall(cfg, true, environment, &out); err != nil {
+		t.Fatalf("force runInstall() error = %v\n%s", err, out.String())
+	}
+	if strings.Contains(out.String(), "Already up to date") {
+		t.Errorf("force install output = %q, should not report already up to date", out.String())
+	}
+	forcedSnapshots, err := os.ReadDir(cfg.BackupRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(forcedSnapshots) != len(firstSnapshots)+1 {
+		t.Errorf("--force did not create a new snapshot: before=%d after=%d", len(firstSnapshots), len(forcedSnapshots))
+	}
+}
+
+func TestRunInstallReinstallsWhenTargetsDriftAtSameCommit(t *testing.T) {
+	cfg, root := restoreFixture(t)
+	repository := createLocalSkillRepository(t, root)
+	cfg.RepositoryURL = "file://" + repository
+	cfg.Branch = "main"
+	cfg.MinimumSkillCount = 1
+	environment := commandEnvironment(cfg)
+
+	var out bytes.Buffer
+	if err := runInstall(cfg, false, environment, &out); err != nil {
+		t.Fatalf("first runInstall() error = %v\n%s", err, out.String())
+	}
+	firstSnapshots, err := os.ReadDir(cfg.BackupRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Hand-edit a live target without changing the recorded/source commit,
+	// simulating manual drift (targets_match_source, install-skills.sh:678-683).
+	driftFile := filepath.Join(cfg.OpenCodeTarget, "alpha", "SKILL.md")
+	if err := os.WriteFile(driftFile, []byte("drifted\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	if err := runInstall(cfg, false, environment, &out); err != nil {
+		t.Fatalf("drifted runInstall() error = %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "manual drift") {
+		t.Errorf("drifted install output = %q, want a manual-drift warning", out.String())
+	}
+	secondSnapshots, err := os.ReadDir(cfg.BackupRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secondSnapshots) != len(firstSnapshots)+1 {
+		t.Errorf("drifted install did not reinstall: before=%d after=%d", len(firstSnapshots), len(secondSnapshots))
+	}
+	data, err := os.ReadFile(driftFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "drifted") {
+		t.Errorf("reinstall did not restore the canonical tree: %s", data)
+	}
+}
+
+func TestRunStatusReportsDriftWarningWhenTargetsEdited(t *testing.T) {
+	cfg, root := restoreFixture(t)
+	repository := createLocalSkillRepository(t, root)
+	cfg.RepositoryURL = "file://" + repository
+	cfg.Branch = "main"
+	cfg.MinimumSkillCount = 1
+	environment := commandEnvironment(cfg)
+
+	var installOut bytes.Buffer
+	if err := runInstall(cfg, false, environment, &installOut); err != nil {
+		t.Fatalf("runInstall() error = %v\n%s", err, installOut.String())
+	}
+
+	driftFile := filepath.Join(cfg.OpenCodeTarget, "alpha", "SKILL.md")
+	if err := os.WriteFile(driftFile, []byte("drifted\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := runStatus(cfg, environment, &out); err != nil {
+		t.Fatalf("runStatus() error = %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "manual drift") {
+		t.Errorf("status output = %q, want a manual-drift warning", out.String())
+	}
+	if !strings.Contains(out.String(), "~1 modified") {
+		t.Errorf("status output = %q, want a modified-skill summary", out.String())
+	}
+	if strings.Contains(out.String(), "Already up to date") {
+		t.Errorf("status output = %q, should not report up to date while drifted", out.String())
+	}
+}
+
+func TestRunStatusReportsSkillChangeSummaryWhenUpstreamAdvances(t *testing.T) {
+	cfg, root := restoreFixture(t)
+	repository := createLocalSkillRepository(t, root)
+	cfg.RepositoryURL = "file://" + repository
+	cfg.Branch = "main"
+	cfg.MinimumSkillCount = 1
+	environment := commandEnvironment(cfg)
+
+	var installOut bytes.Buffer
+	if err := runInstall(cfg, false, environment, &installOut); err != nil {
+		t.Fatalf("runInstall() error = %v\n%s", err, installOut.String())
+	}
+
+	// Advance the upstream repository: add "gamma", remove "beta".
+	if err := os.RemoveAll(filepath.Join(repository, "skills", "beta")); err != nil {
+		t.Fatal(err)
+	}
+	gamma := filepath.Join(repository, "skills", "gamma")
+	if err := os.MkdirAll(gamma, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "---\nname: gamma\ndescription: Fixture skill\n---\n\n# gamma\n"
+	if err := os.WriteFile(filepath.Join(gamma, "SKILL.md"), []byte(manifest), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	gitEnv := []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + filepath.Join(root, "home"),
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=" + filepath.Join(root, "home", ".gitconfig"),
+	}
+	for _, args := range [][]string{
+		{"-C", repository, "add", "-A", "skills"},
+		{"-C", repository, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "advance"},
+	} {
+		command := exec.Command("git", args...)
+		command.Env = gitEnv
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+
+	var out bytes.Buffer
+	if err := runStatus(cfg, environment, &out); err != nil {
+		t.Fatalf("runStatus() error = %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "A newer skill-pack version is available") {
+		t.Errorf("status output = %q, want a newer-version message", out.String())
+	}
+	if !strings.Contains(out.String(), "+1 new") || !strings.Contains(out.String(), "-1 removed") {
+		t.Errorf("status output = %q, want +1 new/-1 removed counts", out.String())
+	}
+	if !strings.Contains(out.String(), "+ gamma") {
+		t.Errorf("status output = %q, want added skill gamma listed", out.String())
+	}
+	if !strings.Contains(out.String(), "- beta") {
+		t.Errorf("status output = %q, want removed skill beta listed", out.String())
 	}
 }

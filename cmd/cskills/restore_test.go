@@ -311,7 +311,7 @@ func TestInvalidLockPathDoesNotMutateTransactionOrRestoreState(t *testing.T) {
 		{
 			name: "transaction without preparation",
 			run: func(cfg Configuration, replacements []stagedTarget) error {
-				_, err := runTransactionWithPreparation(cfg, replacements, "install", "unknown", transactionHooks{}, nil)
+				_, err := runTransactionWithPreparation(cfg, replacements, "install", "unknown", transactionHooks{}, nil, nil)
 				return err
 			},
 		},

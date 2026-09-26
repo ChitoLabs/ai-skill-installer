@@ -82,5 +82,5 @@ func restoreSnapshotWithHooks(cfg Configuration, snapshotID string, hooks transa
 			replacements[index].StagedPath = replacement
 		}
 		return replacements, metadata.SourceCommit, cleanup, nil
-	})
+	}, nil)
 }
