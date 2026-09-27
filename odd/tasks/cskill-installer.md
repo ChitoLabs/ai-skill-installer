@@ -112,5 +112,9 @@ Forecast: five implementation slices (CSK-001–CSK-005), each intended to be in
   - [x] `restore` writes installed state inside `postCommit` while the lock is held, like Bash `run_restore` (`1506-1559`) — commit `a86ede8`; README Locking row updated, two limitation rows removed.
   - [x] Verifier finding (pre-existing, fixed inline): restore silently skipped the state write when the strict snapshot manifest counter failed (symlinked skill dir, nested `.codegraph`, unreadable entry). `countLiveSkillManifests` now mirrors Bash `count_skill_manifests` (`705-719`) exactly and never fails; parity test runs the real Bash function on the same fixture.
   - Verification: RDD off; `a86ede8` tier high → writer self-verify + independent verifier PASS with notes (finding above). Follow-up: `go vet` clean, `go test -count=1 ./...` ok, Bash suite PASS 52, Bash files unchanged.
-- **Next step:** User decision — push `fix/cskill-residual-divergences` and open a PR to `main`.
+- **CSK-006 delivered:** PR #6 merged with a merge commit (`b998ff6`); branch deleted.
+- **CSK-007 — CI (branch `ci/cskill-checks`; route: direct inline, one new workflow file + one README line; user-authorized 2026-09-27):**
+  - [x] `.github/workflows/ci.yml`: on pull requests and pushes to `main`, read-only permissions, `actions/checkout@v5`, `actions/setup-go@v6` (`go-version-file: go.mod`), `gofmt -l cmd`, `go vet ./...`, `go test -count=1 ./...`, `bash tests/test-installer.sh`. `actionlint` clean locally.
+  - [ ] First CI run green on the PR.
+- **Next step:** Confirm the CI run on the PR, then user merge.
 - **Previous next step (superseded):** CSK-005b — public CLI `status`/`list`/`restore`/`install` with tests; CSK-005c — README commands, safety, compatibility, and limitations.

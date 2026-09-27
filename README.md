@@ -463,4 +463,5 @@ bash tests/test-installer.sh
 
 `bash tests/test-installer.sh` is the unchanged Bash regression and
 interoperability gate; `cskill` does not modify `install-skills.sh` or its
-tests.
+tests. The `CI` workflow (`.github/workflows/ci.yml`) runs `gofmt`, these
+commands, and the Bash suite on every pull request and on pushes to `main`.
