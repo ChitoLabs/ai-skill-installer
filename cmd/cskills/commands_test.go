@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -561,5 +562,75 @@ func TestRunInstallPrintsSkillChangeSummaryOnUpgrade(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(target, "beta")); !os.IsNotExist(err) {
 			t.Errorf("upgrade install did not remove %s/beta: err=%v", target, err)
 		}
+	}
+}
+
+// TestCountLiveSkillManifestsMatchesBashCountSkillManifests runs the real
+// count_skill_manifests function extracted from install-skills.sh against the
+// same live-target fixture, so restore's installed-state skill_count cannot
+// drift from Bash and never fails on trees the snapshot validator rejects.
+func TestCountLiveSkillManifestsMatchesBashCountSkillManifests(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "skills")
+	outside := filepath.Join(root, "outside")
+	write := func(path string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("skill\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(target, "alpha", "SKILL.md"))
+	write(filepath.Join(target, "nested", "SKILL.md"))
+	if err := os.MkdirAll(filepath.Join(target, "nested", ".codegraph"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(filepath.Join(outside, "linked", "SKILL.md"))
+	if err := os.Symlink(filepath.Join(outside, "linked"), filepath.Join(target, "linked-dir")); err != nil {
+		t.Fatal(err)
+	}
+	write(filepath.Join(outside, "manifest.md"))
+	if err := os.MkdirAll(filepath.Join(target, "linked-manifest"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "manifest.md"), filepath.Join(target, "linked-manifest", "SKILL.md")); err != nil {
+		t.Fatal(err)
+	}
+	write(filepath.Join(target, ".hidden", "SKILL.md"))
+	if err := os.MkdirAll(filepath.Join(target, "dir-manifest", "SKILL.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(target, "empty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	script, err := os.ReadFile(filepath.Join("..", "..", "install-skills.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := strings.Index(string(script), "count_skill_manifests() {")
+	if start < 0 {
+		t.Fatal("count_skill_manifests not found in install-skills.sh")
+	}
+	end := strings.Index(string(script)[start:], "\n}\n")
+	if end < 0 {
+		t.Fatal("count_skill_manifests end not found in install-skills.sh")
+	}
+	function := string(script)[start : start+end+3]
+
+	for _, dir := range []string{target, filepath.Join(root, "missing")} {
+		output, err := exec.Command("bash", "-c", function+`count_skill_manifests "$1"`, "bash", dir).Output()
+		if err != nil {
+			t.Fatalf("bash count_skill_manifests(%s): %v", dir, err)
+		}
+		want := strings.TrimSpace(string(output))
+		if got := countLiveSkillManifests(dir); strconv.Itoa(got) != want {
+			t.Errorf("countLiveSkillManifests(%s) = %d, Bash count_skill_manifests = %s", dir, got, want)
+		}
+	}
+	if got := countLiveSkillManifests(target); got != 3 {
+		t.Errorf("countLiveSkillManifests(target) = %d, want 3 (alpha, nested, linked-dir)", got)
 	}
 }

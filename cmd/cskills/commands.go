@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -386,19 +387,28 @@ func runRestore(cfg Configuration, snapshotID string, out io.Writer) error {
 	return nil
 }
 
-// countLiveSkillManifests mirrors count_skill_manifests: it counts direct
-// child SKILL.md manifests under an already-managed live target, treating a
-// missing or unsafe root as zero rather than an error.
-func countLiveSkillManifests(root string) (int, error) {
-	info, err := os.Lstat(root)
+// countLiveSkillManifests mirrors count_skill_manifests
+// (install-skills.sh:705-719): it counts regular, non-symlink SKILL.md files
+// matched by the glob "$root"/*/SKILL.md. Like the Bash nullglob loop it never
+// fails: a missing or unreadable root counts as zero, hidden children are not
+// matched, and symlinked child directories are followed as the glob does.
+func countLiveSkillManifests(root string) int {
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		return 0
+	}
+	entries, err := os.ReadDir(root)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, nil
+		return 0
+	}
+	count := 0
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".") {
+			continue
 		}
-		return 0, err
+		info, err := os.Lstat(filepath.Join(root, entry.Name(), "SKILL.md"))
+		if err == nil && info.Mode().IsRegular() {
+			count++
+		}
 	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return 0, nil
-	}
-	return countSnapshotManifests(root)
+	return count
 }

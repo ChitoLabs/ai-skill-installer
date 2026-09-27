@@ -37,18 +37,15 @@ func restoreSnapshotWithHooks(cfg Configuration, snapshotID string, hooks transa
 	// it is a valid 40-hex commit, and it runs while runTransactionWithPreparation
 	// still holds the installer lock, matching Bash's single acquire_installer_lock
 	// call spanning validate_snapshot through write_installed_state
-	// (install-skills.sh:1506-1559). A count_skill_manifests-equivalent failure
-	// (countLiveSkillManifests) is skipped silently, same as before this change;
-	// only a WriteInstalledState failure surfaces as an error, keeping the
+	// (install-skills.sh:1506-1559). The skill count uses the never-failing
+	// count_skill_manifests mirror, so a valid commit always updates state; only
+	// a WriteInstalledState failure surfaces as an error, keeping the
 	// commit-produced snapshot and matching install's postCommit semantics.
 	postCommit := func(commit, _ string) error {
 		if !commitPattern.MatchString(commit) {
 			return nil
 		}
-		skillCount, err := countLiveSkillManifests(cfg.OpenCodeTarget)
-		if err != nil {
-			return nil
-		}
+		skillCount := countLiveSkillManifests(cfg.OpenCodeTarget)
 		state := InstalledState{
 			RepositoryURL: cfg.RepositoryURL,
 			Branch:        cfg.Branch,
