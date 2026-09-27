@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"time"
 )
 
 // restoreSnapshot applies a validated snapshot through the internal transaction
@@ -29,6 +31,32 @@ func restoreSnapshotWithHooks(cfg Configuration, snapshotID string, hooks transa
 		if pathsOverlap(snapshotPath, target.path) {
 			return "", fmt.Errorf("restore snapshot overlaps configured target: %s", target.path)
 		}
+	}
+	// postCommit mirrors run_restore's write_installed_state call
+	// (install-skills.sh:1557-1559): it records the restored commit only when
+	// it is a valid 40-hex commit, and it runs while runTransactionWithPreparation
+	// still holds the installer lock, matching Bash's single acquire_installer_lock
+	// call spanning validate_snapshot through write_installed_state
+	// (install-skills.sh:1506-1559). The skill count uses the never-failing
+	// count_skill_manifests mirror, so a valid commit always updates state; only
+	// a WriteInstalledState failure surfaces as an error, keeping the
+	// commit-produced snapshot and matching install's postCommit semantics.
+	postCommit := func(commit, _ string) error {
+		if !commitPattern.MatchString(commit) {
+			return nil
+		}
+		skillCount := countLiveSkillManifests(cfg.OpenCodeTarget)
+		state := InstalledState{
+			RepositoryURL: cfg.RepositoryURL,
+			Branch:        cfg.Branch,
+			SourceCommit:  commit,
+			SkillCount:    strconv.Itoa(skillCount),
+			InstalledUTC:  time.Now().UTC().Format("2006-01-02T15:04:05Z"),
+		}
+		if err := WriteInstalledState(cfg.StatePath, state); err != nil {
+			return fmt.Errorf("restore committed; installed state not updated: %w", err)
+		}
+		return nil
 	}
 	return runTransactionWithPreparation(cfg, nil, "pre-restore", "unknown", hooks, func() ([]stagedTarget, string, func(), error) {
 		replacements := make([]stagedTarget, len(targets))
@@ -82,5 +110,5 @@ func restoreSnapshotWithHooks(cfg Configuration, snapshotID string, hooks transa
 			replacements[index].StagedPath = replacement
 		}
 		return replacements, metadata.SourceCommit, cleanup, nil
-	}, nil)
+	}, postCommit)
 }

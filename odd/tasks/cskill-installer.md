@@ -106,5 +106,11 @@ Forecast: five implementation slices (CSK-001–CSK-005), each intended to be in
   - #3 `feat/cskill-03-transaction` → #2 (`9ae0fbe`–`ea137aa`, +771/−2)
   - #4 `feat/cskill-04-interop` → #3 (`5020209`–`1ace73d`, +1088/−6)
   - #5 `feat/cskill-installer` → #4 (`c234ccf`–HEAD, CLI + README + task doc)
-- **Next step:** Human review and merge in order #1 → #5; after each merge, retarget the next PR to `main` and rebase if GitHub shows a polluted diff. Optional follow-up: residual divergences (install pre-upgrade summary, restore state write under lock).
+- **Merged (2026-09-26, user-authorized):** #1–#5 merged in order with merge commits (each retargeted to `main`, clean diffs); `main` at `5403433`, tree identical to `9942aa0`; `go vet`, `go test -count=1`, and Bash suite pass on `main`. Stack branches deleted locally and on origin.
+- **CSK-006 — residual Bash divergences (branch `fix/cskill-residual-divergences`; route: delegated writer; trigger: preparation reading of Bash + Go commands/transaction):**
+  - [x] `install` prints the pre-upgrade skill change summary like Bash `run_install` (`install-skills.sh:1441-1447`); fresh install and same-version paths unchanged — commit `a86ede8`.
+  - [x] `restore` writes installed state inside `postCommit` while the lock is held, like Bash `run_restore` (`1506-1559`) — commit `a86ede8`; README Locking row updated, two limitation rows removed.
+  - [x] Verifier finding (pre-existing, fixed inline): restore silently skipped the state write when the strict snapshot manifest counter failed (symlinked skill dir, nested `.codegraph`, unreadable entry). `countLiveSkillManifests` now mirrors Bash `count_skill_manifests` (`705-719`) exactly and never fails; parity test runs the real Bash function on the same fixture.
+  - Verification: RDD off; `a86ede8` tier high → writer self-verify + independent verifier PASS with notes (finding above). Follow-up: `go vet` clean, `go test -count=1 ./...` ok, Bash suite PASS 52, Bash files unchanged.
+- **Next step:** User decision — push `fix/cskill-residual-divergences` and open a PR to `main`.
 - **Previous next step (superseded):** CSK-005b — public CLI `status`/`list`/`restore`/`install` with tests; CSK-005c — README commands, safety, compatibility, and limitations.

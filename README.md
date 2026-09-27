@@ -405,7 +405,7 @@ different files.
 | Property | Behavior |
 |---|---|
 | Pre-mutation validation | Configuration, target, backup, lock, and state paths are validated before any snapshot or destination mutation, then revalidated once the install lock is held. |
-| Locking | `install` and `restore` take one non-blocking `flock` on the configured lock file; a second concurrent destructive operation fails immediately before any mutation. `install` holds the lock uninterrupted from cloning through the transaction and the installed-state write. `restore` releases the lock before writing installed state — a documented residual divergence (see Limitations). |
+| Locking | `install` and `restore` take one non-blocking `flock` on the configured lock file; a second concurrent destructive operation fails immediately before any mutation. Both hold the lock uninterrupted through their transaction and the installed-state write: `install` from cloning through the state write, and `restore` from snapshot validation through the state write. |
 | Transactional replacement | Targets are staged, snapshotted, and committed as one unit; a failure before commit rolls back from quarantined originals, and a target that did not previously exist is restored to being absent. |
 | Pre-restore safety snapshot | `restore` always creates a fresh `pre-restore` snapshot of the current state before applying the selected snapshot. |
 | Uncaptured targets | A target the selected snapshot did not capture is left completely unchanged by `restore`. |
@@ -451,8 +451,6 @@ and `TestGoReadsBashWrittenInstalledState`,
 | Installed-state fallback | Stricter than Bash: `cskill` requires the fallback snapshot to pass full `ValidateSnapshot` checks, not only a valid source-commit line (`TestGoInstalledStateFallbackIsStricterThanBash`). |
 | Interactive restore | No menu or restore picker; `restore` always requires an explicit `BACKUP_ID`. |
 | No-command behavior | `cskill` with no command prints the logo and exits `0`; the Bash installer prints usage and exits `2` in the same headless situation. |
-| Install summary | `install` does not print the pre-upgrade skill change summary that `status` prints. |
-| Restore lock scope | `restore` writes the installed-state update after releasing the install lock, unlike `install`, which holds the lock through the state write. |
 
 ### Verification
 
