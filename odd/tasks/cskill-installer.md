@@ -115,6 +115,6 @@ Forecast: five implementation slices (CSK-001–CSK-005), each intended to be in
 - **CSK-006 delivered:** PR #6 merged with a merge commit (`b998ff6`); branch deleted.
 - **CSK-007 — CI (branch `ci/cskill-checks`; route: direct inline, one new workflow file + one README line; user-authorized 2026-09-27):**
   - [x] `.github/workflows/ci.yml`: on pull requests and pushes to `main`, read-only permissions, `actions/checkout@v5`, `actions/setup-go@v6` (`go-version-file: go.mod`), `gofmt -l cmd`, `go vet ./...`, `go test -count=1 ./...`, `bash tests/test-installer.sh`. `actionlint` clean locally.
-  - [ ] First CI run green on the PR.
-- **Next step:** Confirm the CI run on the PR, then user merge.
+  - [x] First CI run green on PR #7 (run 36283045058: gofmt, vet, Go tests, Bash suite all success).
+- **Next step:** User merges PR #7. Remaining optional work: ownership/ACL test as root or in a container; xattr copying only if a skill needs it.
 - **Previous next step (superseded):** CSK-005b — public CLI `status`/`list`/`restore`/`install` with tests; CSK-005c — README commands, safety, compatibility, and limitations.
