@@ -417,6 +417,76 @@ func assertSafetySnapshot(t *testing.T, cfg Configuration) {
 	t.Fatal("pre-restore safety snapshot was not retained")
 }
 
+// TestPostCommitRunsWhileInstallerLockIsHeld proves the mechanism restore's
+// postCommit now relies on: runTransactionWithPreparation invokes postCommit
+// before releasing the installer lock it acquired (transaction.go's deferred
+// lock.Close runs after postCommit returns), mirroring Bash's single
+// acquire_installer_lock call spanning run_transaction and
+// write_installed_state (install-skills.sh:1506, 1556-1559). It proves this
+// by having postCommit itself attempt to acquire the same lock and observing
+// contention.
+func TestPostCommitRunsWhileInstallerLockIsHeld(t *testing.T) {
+	cfg, _ := restoreFixture(t)
+	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget} {
+		writeRestoreTree(t, target, "seed")
+	}
+	replacements := []stagedTarget{
+		{Target: cfg.OpenCodeTarget, Preserve: true},
+		{Target: cfg.ClaudeTarget, Preserve: true},
+		{Target: cfg.AgyTarget, Preserve: true},
+	}
+
+	var observedContention bool
+	var postCommitRan bool
+	postCommit := func(string, string) error {
+		postCommitRan = true
+		reentrant, err := acquireInstallerLock(cfg.LockPath)
+		if reentrant != nil {
+			reentrant.Close()
+		}
+		observedContention = errors.Is(err, errInstallerLockContended)
+		return nil
+	}
+
+	if _, err := runTransactionWithPreparation(cfg, replacements, "install", "unknown", transactionHooks{}, nil, postCommit); err != nil {
+		t.Fatalf("runTransactionWithPreparation() error = %v", err)
+	}
+	if !postCommitRan {
+		t.Fatal("postCommit did not run")
+	}
+	if !observedContention {
+		t.Error("postCommit did not observe the installer lock held during its call")
+	}
+
+	// The lock must be free again once the transaction has returned.
+	lock, err := acquireInstallerLock(cfg.LockPath)
+	if err != nil {
+		t.Fatalf("acquireInstallerLock() after transaction returned: %v", err)
+	}
+	lock.Close()
+}
+
+// TestRestoreWithUnknownCommitDoesNotWriteInstalledState proves restore's
+// postCommit skips the installed-state write for a non-40-hex source commit
+// (e.g. "unknown"), mirroring Bash's `[[ "$selected_commit" =~ ^[0-9a-f]{40}$ ]]`
+// guard around write_installed_state (install-skills.sh:1557-1559).
+func TestRestoreWithUnknownCommitDoesNotWriteInstalledState(t *testing.T) {
+	cfg, _ := restoreFixture(t)
+	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget} {
+		writeRestoreTree(t, target, "seed")
+	}
+	snapshotID, err := CreateSnapshot(cfg, "install", "unknown")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restoreSnapshot(cfg, snapshotID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(cfg.StatePath); !os.IsNotExist(err) {
+		t.Errorf("restore with unknown source commit wrote installed state, err=%v", err)
+	}
+}
+
 func assertMarker(t *testing.T, path, expected string) {
 	t.Helper()
 	data, err := os.ReadFile(path)

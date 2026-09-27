@@ -292,6 +292,22 @@ func runInstall(cfg Configuration, force bool, environment map[string]string, ou
 					fmt.Fprintln(out, "Warning: same commit as installed, but local targets differ (manual drift). Proceeding with reinstall.")
 				}
 			}
+		} else if stateErr == nil {
+			// Mirrors run_install's pre-upgrade summary (install-skills.sh:1441-1447):
+			// a previously installed version was resolved but it differs from the
+			// source commit/repository/branch, so log the added/modified/removed
+			// skill diff against the current reference target before replacing it.
+			// A fresh install (stateErr != nil, install-skills.sh:1448-1450) never
+			// reaches this branch, matching Bash's "none (fresh install)" path.
+			if reference := referenceTarget(cfg); reference != "" {
+				fmt.Fprintf(out, "Skill changes vs %s:\n", reference)
+				summary, summaryErr := summarizeSkillChanges(reference, skillsDir)
+				if summaryErr != nil {
+					cleanup()
+					return nil, "", nil, summaryErr
+				}
+				writeSkillChangeSummary(out, summary)
+			}
 		}
 
 		replacements := []stagedTarget{
@@ -354,27 +370,14 @@ func runRestoreCommand(args []string, out io.Writer, environment map[string]stri
 	return runRestore(cfg, snapshotID, out)
 }
 
+// runRestore mirrors run_restore (install-skills.sh:1495-1567). The installed
+// state write now happens inside restoreSnapshot's postCommit callback, still
+// under the installer lock acquired by runTransactionWithPreparation, instead
+// of after restoreSnapshot returns and the lock has been released.
 func runRestore(cfg Configuration, snapshotID string, out io.Writer) error {
 	safetyID, err := restoreSnapshot(cfg, snapshotID)
 	if err != nil {
 		return err
-	}
-
-	metadata, metadataErr := ValidateSnapshot(filepath.Join(cfg.BackupRoot, snapshotID))
-	if metadataErr == nil && commitPattern.MatchString(metadata.SourceCommit) {
-		skillCount, countErr := countLiveSkillManifests(cfg.OpenCodeTarget)
-		if countErr == nil {
-			state := InstalledState{
-				RepositoryURL: cfg.RepositoryURL,
-				Branch:        cfg.Branch,
-				SourceCommit:  metadata.SourceCommit,
-				SkillCount:    strconv.Itoa(skillCount),
-				InstalledUTC:  time.Now().UTC().Format("2006-01-02T15:04:05Z"),
-			}
-			if writeErr := WriteInstalledState(cfg.StatePath, state); writeErr != nil {
-				return fmt.Errorf("restore committed; installed state not updated: %w", writeErr)
-			}
-		}
 	}
 
 	fmt.Fprintf(out, "Restored snapshot: %s\n", snapshotID)
