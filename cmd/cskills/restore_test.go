@@ -151,7 +151,7 @@ func runBashInstall(t *testing.T, cfg Configuration, root, repository string) st
 	return ""
 }
 
-func TestBashRestoresGoCreatedV2Snapshot(t *testing.T) {
+func TestBashRestoresGoCreatedV3Snapshot(t *testing.T) {
 	cfg, root := restoreFixture(t)
 	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget} {
 		writeRestoreTree(t, target, "go-snapshot")
@@ -175,11 +175,12 @@ func TestBashRestoresGoCreatedV2Snapshot(t *testing.T) {
 	assertSafetySnapshot(t, cfg)
 }
 
-func TestGoRestoresBashGeneratedV2Snapshot(t *testing.T) {
+func TestGoRestoresBashGeneratedV3Snapshot(t *testing.T) {
 	cfg, root := restoreFixture(t)
 	writeRestoreTree(t, cfg.OpenCodeTarget, "before-opencode")
 	writeRestoreTree(t, cfg.ClaudeTarget, "before-claude")
-	// AGY intentionally does not exist when Bash captures the v2 snapshot.
+	writeRestoreTree(t, cfg.AgentsTarget, "before-agents")
+	// AGY intentionally does not exist when Bash captures the snapshot.
 	repository := createLocalSkillRepository(t, root)
 	snapshotID := runBashInstall(t, cfg, root, repository)
 	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget} {
@@ -190,9 +191,77 @@ func TestGoRestoresBashGeneratedV2Snapshot(t *testing.T) {
 	}
 	assertMarker(t, filepath.Join(cfg.OpenCodeTarget, "marker.txt"), "before-opencode\n")
 	assertMarker(t, filepath.Join(cfg.ClaudeTarget, "marker.txt"), "before-claude\n")
+	assertMarker(t, filepath.Join(cfg.AgentsTarget, "marker.txt"), "before-agents\n")
 	if _, err := os.Lstat(cfg.AgyTarget); !os.IsNotExist(err) {
 		t.Fatalf("captured absent AGY target should be absent, stat err=%v", err)
 	}
+	assertSafetySnapshot(t, cfg)
+}
+
+func TestGoRestoresBashGeneratedV2Snapshot(t *testing.T) {
+	cfg, _ := restoreFixture(t)
+	snapshotID := "20260924T120000Z-beef0002"
+	snapshotPath := filepath.Join(cfg.BackupRoot, snapshotID)
+	if err := os.MkdirAll(snapshotPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeRestoreTree(t, filepath.Join(snapshotPath, "opencode"), "v2-opencode")
+	writeRestoreTree(t, filepath.Join(snapshotPath, "claude"), "v2-claude")
+	writeRestoreTree(t, filepath.Join(snapshotPath, "agy"), "v2-agy")
+	metadataContent := fmt.Sprintf("format_version=2\nid=%s\ncreated_utc=2026-09-24T12:00:00Z\nreason=install\nsource_commit=unknown\n"+
+		"opencode_captured=1\nclaude_captured=1\nagy_captured=1\n"+
+		"opencode_existed=1\nclaude_existed=1\nagy_existed=1\n"+
+		"opencode_skill_count=1\nclaude_skill_count=1\nagy_skill_count=1\n", snapshotID)
+	if err := os.WriteFile(filepath.Join(snapshotPath, "metadata"), []byte(metadataContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget} {
+		writeRestoreTree(t, target, "current")
+	}
+	writeRestoreTree(t, cfg.AgentsTarget, "agents-unchanged")
+
+	if _, err := restoreSnapshot(cfg, snapshotID); err != nil {
+		t.Fatalf("restoreSnapshot(v2) error = %v", err)
+	}
+	assertMarker(t, filepath.Join(cfg.OpenCodeTarget, "marker.txt"), "v2-opencode\n")
+	assertMarker(t, filepath.Join(cfg.ClaudeTarget, "marker.txt"), "v2-claude\n")
+	assertMarker(t, filepath.Join(cfg.AgyTarget, "marker.txt"), "v2-agy\n")
+	// Agents was uncaptured in v2 and must remain untouched.
+	assertMarker(t, filepath.Join(cfg.AgentsTarget, "marker.txt"), "agents-unchanged\n")
+	assertSafetySnapshot(t, cfg)
+}
+
+func TestBashRestoresGoLegacyV2SnapshotLeavesAgentsUnchanged(t *testing.T) {
+	cfg, root := restoreFixture(t)
+	snapshotID := "20260924T130000Z-beef0003"
+	snapshotPath := filepath.Join(cfg.BackupRoot, snapshotID)
+	if err := os.MkdirAll(snapshotPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeRestoreTree(t, filepath.Join(snapshotPath, "opencode"), "v2-opencode")
+	writeRestoreTree(t, filepath.Join(snapshotPath, "claude"), "v2-claude")
+	writeRestoreTree(t, filepath.Join(snapshotPath, "agy"), "v2-agy")
+	metadataContent := fmt.Sprintf("format_version=2\nid=%s\ncreated_utc=2026-09-24T13:00:00Z\nreason=install\nsource_commit=unknown\n"+
+		"opencode_captured=1\nclaude_captured=1\nagy_captured=1\n"+
+		"opencode_existed=1\nclaude_existed=1\nagy_existed=1\n"+
+		"opencode_skill_count=1\nclaude_skill_count=1\nagy_skill_count=1\n", snapshotID)
+	if err := os.WriteFile(filepath.Join(snapshotPath, "metadata"), []byte(metadataContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget} {
+		writeRestoreTree(t, target, "current")
+	}
+	writeRestoreTree(t, cfg.AgentsTarget, "agents-unchanged")
+
+	if err := runIsolatedBash(t, cfg, root, nil, "restore", snapshotID); err != nil {
+		t.Fatalf("Bash restore of v2 snapshot failed: %v", err)
+	}
+	assertMarker(t, filepath.Join(cfg.OpenCodeTarget, "marker.txt"), "v2-opencode\n")
+	assertMarker(t, filepath.Join(cfg.ClaudeTarget, "marker.txt"), "v2-claude\n")
+	assertMarker(t, filepath.Join(cfg.AgyTarget, "marker.txt"), "v2-agy\n")
+	assertMarker(t, filepath.Join(cfg.AgentsTarget, "marker.txt"), "agents-unchanged\n")
 	assertSafetySnapshot(t, cfg)
 }
 
