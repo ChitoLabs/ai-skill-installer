@@ -14,7 +14,7 @@ import (
 func restoreFixture(t *testing.T) (Configuration, string) {
 	t.Helper()
 	root := t.TempDir()
-	for _, parent := range []string{"opencode", "claude", "agy"} {
+	for _, parent := range []string{"opencode", "claude", "agy", "agents"} {
 		if err := os.MkdirAll(filepath.Join(root, parent), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -24,6 +24,7 @@ func restoreFixture(t *testing.T) (Configuration, string) {
 		"OPENCODE_SKILLS_DIR":        filepath.Join(root, "opencode", "skills"),
 		"CLAUDE_SKILLS_DIR":          filepath.Join(root, "claude", "skills"),
 		"AGY_SKILLS_DIR":             filepath.Join(root, "agy", "skills"),
+		"AGENTS_SKILLS_DIR":          filepath.Join(root, "agents", "skills"),
 		"SKILL_BACKUP_DIR":           filepath.Join(root, "BKOld"),
 		"SKILL_INSTALLER_LOCK_FILE":  filepath.Join(root, "installer.lock"),
 		"SKILL_INSTALLER_STATE_FILE": filepath.Join(root, "installer.state"),
@@ -72,6 +73,7 @@ func isolatedBashEnv(cfg Configuration, root string, extra ...string) []string {
 		"OPENCODE_SKILLS_DIR=" + cfg.OpenCodeTarget,
 		"CLAUDE_SKILLS_DIR=" + cfg.ClaudeTarget,
 		"AGY_SKILLS_DIR=" + cfg.AgyTarget,
+		"AGENTS_SKILLS_DIR=" + cfg.AgentsTarget,
 		"SKILL_BACKUP_DIR=" + cfg.BackupRoot,
 		"SKILL_INSTALLER_LOCK_FILE=" + cfg.LockPath,
 		"SKILL_INSTALLER_STATE_FILE=" + cfg.StatePath,
@@ -151,20 +153,20 @@ func runBashInstall(t *testing.T, cfg Configuration, root, repository string) st
 
 func TestBashRestoresGoCreatedV2Snapshot(t *testing.T) {
 	cfg, root := restoreFixture(t)
-	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget} {
+	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget} {
 		writeRestoreTree(t, target, "go-snapshot")
 	}
 	snapshotID, err := CreateSnapshot(cfg, "install", "unknown")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget} {
+	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget} {
 		writeRestoreTree(t, target, "current")
 	}
 	if err := runIsolatedBash(t, cfg, root, nil, "restore", snapshotID); err != nil {
 		t.Fatal(err)
 	}
-	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget} {
+	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget} {
 		data, err := os.ReadFile(filepath.Join(target, "marker.txt"))
 		if err != nil || string(data) != "go-snapshot\n" {
 			t.Errorf("Bash did not restore %s: data=%q err=%v", target, data, err)
@@ -180,7 +182,7 @@ func TestGoRestoresBashGeneratedV2Snapshot(t *testing.T) {
 	// AGY intentionally does not exist when Bash captures the v2 snapshot.
 	repository := createLocalSkillRepository(t, root)
 	snapshotID := runBashInstall(t, cfg, root, repository)
-	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget} {
+	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget} {
 		writeRestoreTree(t, target, "after-bash-snapshot")
 	}
 	if _, err := restoreSnapshot(cfg, snapshotID); err != nil {
@@ -223,6 +225,10 @@ func TestGoRestoresBashLegacyV1CaptureSemantics(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeRestoreTree(t, cfg.AgyTarget, "uncaptured-agy")
+	if err := os.MkdirAll(cfg.AgentsTarget, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeRestoreTree(t, cfg.AgentsTarget, "uncaptured-agents")
 	if _, err := restoreSnapshot(cfg, snapshotID); err != nil {
 		t.Fatal(err)
 	}
@@ -231,24 +237,25 @@ func TestGoRestoresBashLegacyV1CaptureSemantics(t *testing.T) {
 	}
 	assertMarker(t, filepath.Join(cfg.ClaudeTarget, "marker.txt"), "legacy-claude\n")
 	assertMarker(t, filepath.Join(cfg.AgyTarget, "marker.txt"), "uncaptured-agy\n")
+	assertMarker(t, filepath.Join(cfg.AgentsTarget, "marker.txt"), "uncaptured-agents\n")
 	assertSafetySnapshot(t, cfg)
 }
 
 func TestRestoreLockContentionDoesNotMutateSnapshotOrTargets(t *testing.T) {
 	cfg, _ := restoreFixture(t)
-	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget} {
+	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget} {
 		writeRestoreTree(t, target, "before-restore")
 	}
 	snapshotID, err := CreateSnapshot(cfg, "install", "unknown")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget} {
+	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget} {
 		writeRestoreTree(t, target, "current")
 	}
 
-	before := make([][32]byte, 3)
-	for index, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget} {
+	before := make([][32]byte, 4)
+	for index, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget} {
 		before[index], err = fingerprintTree(target)
 		if err != nil {
 			t.Fatal(err)
@@ -272,7 +279,7 @@ func TestRestoreLockContentionDoesNotMutateSnapshotOrTargets(t *testing.T) {
 		t.Fatalf("restore error = %v, want installer lock contention", err)
 	}
 
-	for index, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget} {
+	for index, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget} {
 		if got, err := fingerprintTree(target); err != nil || got != before[index] {
 			t.Errorf("restore changed target %s while lock was held: fingerprint=%x err=%v", target, got, err)
 		}
@@ -326,11 +333,11 @@ func TestInvalidLockPathDoesNotMutateTransactionOrRestoreState(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			cfg, _ := restoreFixture(t)
-			for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget} {
+			for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget} {
 				writeRestoreTree(t, target, "unchanged")
 			}
-			before := make([][32]byte, 3)
-			for index, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget} {
+			before := make([][32]byte, 4)
+			for index, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget} {
 				var err error
 				before[index], err = fingerprintTree(target)
 				if err != nil {
@@ -343,6 +350,7 @@ func TestInvalidLockPathDoesNotMutateTransactionOrRestoreState(t *testing.T) {
 				{Target: cfg.OpenCodeTarget},
 				{Target: cfg.ClaudeTarget},
 				{Target: cfg.AgyTarget},
+				{Target: cfg.AgentsTarget},
 			}
 			if err := test.run(cfg, replacements); err == nil {
 				t.Fatal("operation accepted a lock path inside the protected .codegraph directory")
@@ -353,7 +361,7 @@ func TestInvalidLockPathDoesNotMutateTransactionOrRestoreState(t *testing.T) {
 			if _, err := os.Lstat(cfg.BackupRoot); !os.IsNotExist(err) {
 				t.Errorf("invalid configuration created backup root: %v", err)
 			}
-			for index, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget} {
+			for index, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget} {
 				if got, err := fingerprintTree(target); err != nil || got != before[index] {
 					t.Errorf("invalid configuration changed target %s: fingerprint=%x err=%v", target, got, err)
 				}
@@ -372,18 +380,18 @@ func entryNames(entries []os.DirEntry) []string {
 
 func TestGoRestoreFailureRetainsSafetySnapshotAndRollsBack(t *testing.T) {
 	cfg, _ := restoreFixture(t)
-	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget} {
+	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget} {
 		writeRestoreTree(t, target, "before")
 	}
 	snapshotID, err := CreateSnapshot(cfg, "install", "unknown")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget} {
+	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget} {
 		writeRestoreTree(t, target, "current")
 	}
-	before := make([][32]byte, 3)
-	for i, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget} {
+	before := make([][32]byte, 4)
+	for i, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget} {
 		before[i], err = fingerprintTree(target)
 		if err != nil {
 			t.Fatal(err)
@@ -392,7 +400,7 @@ func TestGoRestoreFailureRetainsSafetySnapshotAndRollsBack(t *testing.T) {
 	if _, err := restoreSnapshotWithHooks(cfg, snapshotID, transactionHooks{failAt: "after-install-0"}); err == nil || !strings.Contains(err.Error(), "injected transaction failure") {
 		t.Fatalf("restore error = %v, want injected rollback failure", err)
 	}
-	for i, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget} {
+	for i, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget} {
 		if got, err := fingerprintTree(target); err != nil || got != before[i] {
 			t.Errorf("restore did not roll back %s: fingerprint=%x err=%v", target, got, err)
 		}
@@ -427,13 +435,14 @@ func assertSafetySnapshot(t *testing.T, cfg Configuration) {
 // contention.
 func TestPostCommitRunsWhileInstallerLockIsHeld(t *testing.T) {
 	cfg, _ := restoreFixture(t)
-	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget} {
+	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget} {
 		writeRestoreTree(t, target, "seed")
 	}
 	replacements := []stagedTarget{
 		{Target: cfg.OpenCodeTarget, Preserve: true},
 		{Target: cfg.ClaudeTarget, Preserve: true},
 		{Target: cfg.AgyTarget, Preserve: true},
+		{Target: cfg.AgentsTarget, Preserve: true},
 	}
 
 	var observedContention bool
@@ -472,7 +481,7 @@ func TestPostCommitRunsWhileInstallerLockIsHeld(t *testing.T) {
 // guard around write_installed_state (install-skills.sh:1557-1559).
 func TestRestoreWithUnknownCommitDoesNotWriteInstalledState(t *testing.T) {
 	cfg, _ := restoreFixture(t)
-	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget} {
+	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget} {
 		writeRestoreTree(t, target, "seed")
 	}
 	snapshotID, err := CreateSnapshot(cfg, "install", "unknown")

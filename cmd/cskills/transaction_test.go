@@ -20,6 +20,7 @@ func transactionFixture(t *testing.T) (Configuration, []stagedTarget) {
 		"OPENCODE_SKILLS_DIR":        filepath.Join(parent, "opencode", "skills"),
 		"CLAUDE_SKILLS_DIR":          filepath.Join(parent, "claude", "skills"),
 		"AGY_SKILLS_DIR":             filepath.Join(parent, "agy", "skills"),
+		"AGENTS_SKILLS_DIR":          filepath.Join(parent, "agents", "skills"),
 		"SKILL_BACKUP_DIR":           filepath.Join(root, "backups"),
 		"SKILL_INSTALLER_LOCK_FILE":  filepath.Join(root, "installer.lock"),
 		"SKILL_INSTALLER_STATE_FILE": filepath.Join(root, "installer.state"),
@@ -28,8 +29,8 @@ func transactionFixture(t *testing.T) (Configuration, []stagedTarget) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stages := make([]stagedTarget, 3)
-	for i, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget} {
+	stages := make([]stagedTarget, 4)
+	for i, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget} {
 		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -57,11 +58,17 @@ func makeTransactionTree(t *testing.T, root, content string) string {
 }
 
 func TestTransactionRollsBackAtEveryMutationBoundary(t *testing.T) {
-	boundaries := []string{"after-snapshot", "after-stage-0", "after-stage-1", "after-stage-2", "after-quarantine-0", "after-quarantine-1", "after-quarantine-2", "after-install-0", "after-install-1", "after-install-2", "before-commit"}
+	boundaries := []string{
+		"after-snapshot",
+		"after-stage-0", "after-stage-1", "after-stage-2", "after-stage-3",
+		"after-quarantine-0", "after-quarantine-1", "after-quarantine-2", "after-quarantine-3",
+		"after-install-0", "after-install-1", "after-install-2", "after-install-3",
+		"before-commit",
+	}
 	for _, boundary := range boundaries {
 		t.Run(boundary, func(t *testing.T) {
 			cfg, replacements := transactionFixture(t)
-			originals := make([][32]byte, 3)
+			originals := make([][32]byte, 4)
 			for i := range replacements {
 				if i == 1 { // A target may be absent and must remain absent.
 					continue

@@ -46,9 +46,10 @@ func createSnapshot(cfg Configuration, reason, sourceCommit string, hooks snapsh
 		{name: "opencode", path: cfg.OpenCodeTarget},
 		{name: "claude", path: cfg.ClaudeTarget},
 		{name: "agy", path: cfg.AgyTarget},
+		{name: "agents", path: cfg.AgentsTarget},
 	}
 	metadata := SnapshotMetadata{
-		FormatVersion: 2,
+		FormatVersion: 3,
 		CreatedUTC:    time.Now().UTC().Format("2006-01-02T15:04:05Z"),
 		Reason:        reason,
 		SourceCommit:  sourceCommit,
@@ -56,6 +57,7 @@ func createSnapshot(cfg Configuration, reason, sourceCommit string, hooks snapsh
 	targets[0].meta = &metadata.OpenCode
 	targets[1].meta = &metadata.Claude
 	targets[2].meta = &metadata.AGY
+	targets[3].meta = &metadata.Agents
 	for _, target := range targets {
 		if target.path == "" || !filepath.IsAbs(target.path) {
 			return "", fmt.Errorf("%s target must be an absolute path", target.name)

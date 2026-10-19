@@ -23,6 +23,7 @@ type Configuration struct {
 	OpenCodeTarget    string
 	ClaudeTarget      string
 	AgyTarget         string
+	AgentsTarget      string
 	BackupRoot        string
 	LockPath          string
 	StatePath         string
@@ -98,6 +99,7 @@ func ResolveConfiguration(environment map[string]string, scriptDir string) (Conf
 		claudeInput = filepath.Join(get("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude")), "skills")
 	}
 	agyInput := get("AGY_SKILLS_DIR", filepath.Join(home, ".gemini", "config", "skills"))
+	agentsInput := get("AGENTS_SKILLS_DIR", filepath.Join(home, ".agents", "skills"))
 
 	cfg := Configuration{
 		RepositoryURL:     repository,
@@ -113,6 +115,7 @@ func ResolveConfiguration(environment map[string]string, scriptDir string) (Conf
 		{opencodeInput, "OpenCode target", &cfg.OpenCodeTarget},
 		{claudeInput, "Claude target", &cfg.ClaudeTarget},
 		{agyInput, "AGY target", &cfg.AgyTarget},
+		{agentsInput, "Agents target", &cfg.AgentsTarget},
 		{get("SKILL_BACKUP_DIR", filepath.Join(scriptDir, "BKOld")), "Backup root", &cfg.BackupRoot},
 		{get("SKILL_INSTALLER_LOCK_FILE", filepath.Join(scriptDir, ".install-skills.lock")), "Installer lock path", &cfg.LockPath},
 		{get("SKILL_INSTALLER_STATE_FILE", filepath.Join(scriptDir, ".installed-skills.state")), "Installer state path", &cfg.StatePath},
@@ -140,6 +143,7 @@ func (cfg Configuration) validatePaths(home string) error {
 		{"OpenCode target", cfg.OpenCodeTarget},
 		{"Claude target", cfg.ClaudeTarget},
 		{"AGY target", cfg.AgyTarget},
+		{"Agents target", cfg.AgentsTarget},
 	}
 	for _, target := range targets {
 		if filepath.Base(target.path) != "skills" {
@@ -163,14 +167,14 @@ func (cfg Configuration) validatePaths(home string) error {
 	if err := validateDirectoryPath(cfg.BackupRoot, "Backup root"); err != nil {
 		return err
 	}
-	if err := rejectOverlaps("Backup root", cfg.BackupRoot, append(append([]string{}, protected...), cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget)); err != nil {
+	if err := rejectOverlaps("Backup root", cfg.BackupRoot, append(append([]string{}, protected...), cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget)); err != nil {
 		return err
 	}
 	for _, filePath := range []struct{ label, path string }{{"Installer lock path", cfg.LockPath}, {"Installer state path", cfg.StatePath}} {
 		if err := validateFilePath(filePath.path, filePath.label); err != nil {
 			return err
 		}
-		if err := rejectOverlaps(filePath.label, filePath.path, append(append([]string{}, protected...), cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.BackupRoot)); err != nil {
+		if err := rejectOverlaps(filePath.label, filePath.path, append(append([]string{}, protected...), cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget, cfg.BackupRoot)); err != nil {
 			return err
 		}
 	}
@@ -315,7 +319,6 @@ func protectedPaths(home string) []string {
 	paths := []string{
 		filepath.Join(home, ".config", "opencode", "commands"),
 		filepath.Join(home, ".engram"),
-		filepath.Join(home, ".agents", "skills"),
 		filepath.Join(home, ".gemini", "antigravity-cli", "skills"),
 	}
 	for i, path := range paths {

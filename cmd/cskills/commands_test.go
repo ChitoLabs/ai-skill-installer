@@ -40,7 +40,7 @@ func TestGoInstallFromLocalRepositoryIsAcceptedByBashStatus(t *testing.T) {
 	if err := runInstall(cfg, false, commandEnvironment(cfg), &installOut); err != nil {
 		t.Fatalf("runInstall() error = %v\n%s", err, installOut.String())
 	}
-	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget} {
+	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget} {
 		for _, skill := range []string{"alpha", "beta"} {
 			if _, err := os.Stat(filepath.Join(target, skill, "SKILL.md")); err != nil {
 				t.Errorf("install did not populate %s/%s: %v", target, skill, err)
@@ -76,7 +76,7 @@ func TestRunInstallLockContentionDoesNotMutate(t *testing.T) {
 	cfg.RepositoryURL = "file://" + repository
 	cfg.Branch = "main"
 	cfg.MinimumSkillCount = 1
-	targets := []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget}
+	targets := []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget}
 	for _, target := range targets {
 		writeRestoreTree(t, target, "before-install")
 	}
@@ -137,7 +137,7 @@ func TestRunListReportsEmptyThenPopulatedSnapshots(t *testing.T) {
 		t.Errorf("empty list output = %q, want no-backups message", out.String())
 	}
 
-	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget} {
+	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget} {
 		writeRestoreTree(t, target, "seed")
 	}
 	goID, err := CreateSnapshot(cfg, "install", "unknown")
@@ -187,7 +187,7 @@ func TestRunListSkipsUnsafeEntriesWithWarnings(t *testing.T) {
 
 func TestRunRestoreByIDWritesInstalledStateFromSnapshotCommit(t *testing.T) {
 	cfg, _ := restoreFixture(t)
-	targets := []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget}
+	targets := []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget}
 	for _, target := range targets {
 		writeRestoreTree(t, target, "before")
 	}
@@ -222,7 +222,7 @@ func TestRunRestoreByIDWritesInstalledStateFromSnapshotCommit(t *testing.T) {
 
 func TestRunRestoreRejectsInvalidIDWithoutMutation(t *testing.T) {
 	cfg, _ := restoreFixture(t)
-	targets := []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget}
+	targets := []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget}
 	for _, target := range targets {
 		writeRestoreTree(t, target, "unchanged")
 	}
@@ -257,7 +257,7 @@ func TestRunInstallIsIdempotentAndForceReinstalls(t *testing.T) {
 	cfg.Branch = "main"
 	cfg.MinimumSkillCount = 1
 	environment := commandEnvironment(cfg)
-	targets := []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget}
+	targets := []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget}
 
 	var out bytes.Buffer
 	if err := runInstall(cfg, false, environment, &out); err != nil {
@@ -555,7 +555,7 @@ func TestRunInstallPrintsSkillChangeSummaryOnUpgrade(t *testing.T) {
 	if !strings.Contains(out.String(), "- beta") {
 		t.Errorf("upgrade install output = %q, want removed skill beta listed", out.String())
 	}
-	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget} {
+	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget} {
 		if _, err := os.Stat(filepath.Join(target, "gamma", "SKILL.md")); err != nil {
 			t.Errorf("upgrade install did not populate %s/gamma: %v", target, err)
 		}

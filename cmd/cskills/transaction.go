@@ -55,6 +55,7 @@ func runTransactionWithPreparation(cfg Configuration, replacements []stagedTarge
 			{Target: cfg.OpenCodeTarget, Preserve: true},
 			{Target: cfg.ClaudeTarget, Preserve: true},
 			{Target: cfg.AgyTarget, Preserve: true},
+			{Target: cfg.AgentsTarget, Preserve: true},
 		}
 	}
 	if err := validateTransactionInputs(cfg, replacements); err != nil {
@@ -298,9 +299,9 @@ func validateTransactionInputs(cfg Configuration, replacements []stagedTarget) e
 	if !cfg.validated {
 		return fmt.Errorf("transaction requires a validated configuration")
 	}
-	expected := []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget}
+	expected := []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget}
 	if len(replacements) != len(expected) {
-		return fmt.Errorf("transaction requires exactly three configured targets")
+		return fmt.Errorf("transaction requires exactly four configured targets")
 	}
 	paths := append([]string(nil), expected...)
 	paths = append(paths, cfg.BackupRoot, cfg.LockPath, cfg.StatePath)
