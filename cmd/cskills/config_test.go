@@ -19,6 +19,7 @@ func TestResolveConfigurationEnvironmentPrecedence(t *testing.T) {
 		"XDG_CONFIG_HOME":            xdg,
 		"CLAUDE_CONFIG_DIR":          claudeConfig,
 		"AGY_SKILLS_DIR":             filepath.Join(home, "agy-explicit", "skills"),
+		"AGENTS_SKILLS_DIR":          filepath.Join(home, "agents-explicit", "skills"),
 		"SKILL_PACK_REPOSITORY_URL":  "https://example.test/skills",
 		"SKILL_PACK_BRANCH":          "stable",
 		"SKILL_PACK_MIN_SKILL_COUNT": "7",
@@ -36,6 +37,7 @@ func TestResolveConfigurationEnvironmentPrecedence(t *testing.T) {
 		"opencode":   filepath.Join(home, "explicit-opencode", "skills"),
 		"claude":     filepath.Join(claudeConfig, "skills"),
 		"agy":        filepath.Join(home, "agy-explicit", "skills"),
+		"agents":     filepath.Join(home, "agents-explicit", "skills"),
 		"backup":     filepath.Join(home, "backup"),
 		"lock":       filepath.Join(home, "installer.lock"),
 		"state":      filepath.Join(home, "installer.state"),
@@ -46,6 +48,7 @@ func TestResolveConfigurationEnvironmentPrecedence(t *testing.T) {
 		"opencode":   cfg.OpenCodeTarget,
 		"claude":     cfg.ClaudeTarget,
 		"agy":        cfg.AgyTarget,
+		"agents":     cfg.AgentsTarget,
 		"backup":     cfg.BackupRoot,
 		"lock":       cfg.LockPath,
 		"state":      cfg.StatePath,
@@ -85,6 +88,9 @@ func TestResolveConfigurationFallbackPrecedence(t *testing.T) {
 			}
 			if cfg.OpenCodeTarget != test.want {
 				t.Errorf("OpenCodeTarget = %q, want %q", cfg.OpenCodeTarget, test.want)
+			}
+			if cfg.AgentsTarget != filepath.Join(home, ".agents", "skills") {
+				t.Errorf("AgentsTarget = %q, want %q", cfg.AgentsTarget, filepath.Join(home, ".agents", "skills"))
 			}
 		})
 	}

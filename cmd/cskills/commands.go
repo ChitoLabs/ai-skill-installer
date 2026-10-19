@@ -209,12 +209,13 @@ func printSnapshotSummary(out io.Writer, metadata SnapshotMetadata) {
 	openCodeState, openCodeCount := label(metadata.OpenCode)
 	claudeState, claudeCount := label(metadata.Claude)
 	agyState, agyCount := label(metadata.AGY)
+	agentsState, agentsCount := label(metadata.Agents)
 
 	fmt.Fprintln(out, metadata.ID)
-	fmt.Fprintf(out, "  UTC: %s | Reason: %s | Targets: OpenCode %s, Claude %s, AGY %s\n",
-		metadata.CreatedUTC, metadata.Reason, openCodeState, claudeState, agyState)
-	fmt.Fprintf(out, "  Skills: %s/%s/%s | Source commit: %s\n",
-		openCodeCount, claudeCount, agyCount, metadata.SourceCommit)
+	fmt.Fprintf(out, "  UTC: %s | Reason: %s | Targets: OpenCode %s, Claude %s, AGY %s, Agents %s\n",
+		metadata.CreatedUTC, metadata.Reason, openCodeState, claudeState, agyState, agentsState)
+	fmt.Fprintf(out, "  Skills: %s/%s/%s/%s | Source commit: %s\n",
+		openCodeCount, claudeCount, agyCount, agentsCount, metadata.SourceCommit)
 }
 
 // runInstallCommand mirrors run_install (install-skills.sh:1411-1493): lock,
@@ -311,10 +312,18 @@ func runInstall(cfg Configuration, force bool, environment map[string]string, ou
 			}
 		}
 
+		for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget} {
+			if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+				cleanup()
+				return nil, "", nil, fmt.Errorf("create target parent directory: %w", err)
+			}
+		}
+
 		replacements := []stagedTarget{
 			{Target: cfg.OpenCodeTarget, StagedPath: skillsDir},
 			{Target: cfg.ClaudeTarget, StagedPath: skillsDir},
 			{Target: cfg.AgyTarget, StagedPath: skillsDir},
+			{Target: cfg.AgentsTarget, StagedPath: skillsDir},
 		}
 		return replacements, commit, cleanup, nil
 	}
@@ -344,8 +353,8 @@ func runInstall(cfg Configuration, force bool, environment map[string]string, ou
 	}
 
 	fmt.Fprintf(out, "Backup snapshot: %s\n", snapshotID)
-	fmt.Fprintf(out, "Installed %d skills from commit %s into OpenCode, Claude, and AGY.\n", skillCount, sourceCommit)
-	fmt.Fprintln(out, "This replacement removed existing skills from all three directories. Restart OpenCode, Claude, and AGY so they reload the installed skills.")
+	fmt.Fprintf(out, "Installed %d skills from commit %s into OpenCode, Claude, AGY, and Agents.\n", skillCount, sourceCommit)
+	fmt.Fprintln(out, "This replacement removed existing skills from all four directories. Restart OpenCode, Claude, AGY, and Pi/Gentle Shell so they reload the installed skills.")
 	return nil
 }
 

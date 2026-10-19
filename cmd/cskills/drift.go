@@ -10,10 +10,10 @@ import (
 )
 
 // referenceTarget mirrors reference_target: it returns the first configured
-// skill target (OpenCode, then Claude, then AGY) that exists as a real,
-// non-symlink directory, or "" when none of the three targets exist yet.
+// skill target (OpenCode, then Claude, then AGY, then Agents) that exists as a real,
+// non-symlink directory, or "" when none of the targets exist yet.
 func referenceTarget(cfg Configuration) string {
-	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget} {
+	for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget} {
 		if info, err := os.Lstat(target); err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
 			return target
 		}

@@ -24,8 +24,8 @@ type SnapshotTarget struct {
 	SkillCount int
 }
 
-// SnapshotMetadata represents Bash snapshot metadata versions 1 and 2. Version
-// 1 implicitly captures OpenCode and Claude only; version 2 records all targets.
+// SnapshotMetadata represents Bash snapshot metadata versions 1, 2, and 3. Version
+// 1 implicitly captures OpenCode and Claude only; version 2 adds AGY; version 3 adds Agents.
 type SnapshotMetadata struct {
 	FormatVersion int
 	ID            string
@@ -35,14 +35,16 @@ type SnapshotMetadata struct {
 	OpenCode      SnapshotTarget
 	Claude        SnapshotTarget
 	AGY           SnapshotTarget
+	Agents        SnapshotTarget
 }
 
 var metadataKeys = map[string]bool{
 	"format_version": true, "id": true, "created_utc": true, "reason": true,
 	"source_commit": true, "opencode_captured": true, "claude_captured": true,
-	"agy_captured": true, "opencode_existed": true, "claude_existed": true,
-	"agy_existed": true, "opencode_skill_count": true, "claude_skill_count": true,
-	"agy_skill_count": true,
+	"agy_captured": true, "agents_captured": true, "opencode_existed": true,
+	"claude_existed": true, "agy_existed": true, "agents_existed": true,
+	"opencode_skill_count": true, "claude_skill_count": true,
+	"agy_skill_count": true, "agents_skill_count": true,
 }
 
 // ParseSnapshotMetadata parses the strict key/value contract used by the Bash
@@ -74,19 +76,29 @@ func ParseSnapshotMetadata(reader io.Reader) (SnapshotMetadata, error) {
 		return SnapshotMetadata{}, fmt.Errorf("snapshot metadata is empty")
 	}
 	version, err := requiredInt(values, "format_version")
-	if err != nil || (version != 1 && version != 2) {
+	if err != nil || (version != 1 && version != 2 && version != 3) {
 		return SnapshotMetadata{}, fmt.Errorf("unsupported or invalid snapshot metadata version %q", values["format_version"])
 	}
 
 	required := []string{"id", "created_utc", "reason", "source_commit", "opencode_existed", "claude_existed", "opencode_skill_count", "claude_skill_count"}
-	if version == 2 {
-		required = append(required, "opencode_captured", "claude_captured", "agy_captured", "agy_existed", "agy_skill_count")
-	} else {
-		for _, forbidden := range []string{"opencode_captured", "claude_captured", "agy_captured", "agy_existed", "agy_skill_count"} {
+	if version == 1 {
+		for _, forbidden := range []string{
+			"opencode_captured", "claude_captured", "agy_captured", "agy_existed", "agy_skill_count",
+			"agents_captured", "agents_existed", "agents_skill_count",
+		} {
 			if _, exists := values[forbidden]; exists {
 				return SnapshotMetadata{}, fmt.Errorf("version 1 snapshot contains unsupported key %q", forbidden)
 			}
 		}
+	} else if version == 2 {
+		required = append(required, "opencode_captured", "claude_captured", "agy_captured", "agy_existed", "agy_skill_count")
+		for _, forbidden := range []string{"agents_captured", "agents_existed", "agents_skill_count"} {
+			if _, exists := values[forbidden]; exists {
+				return SnapshotMetadata{}, fmt.Errorf("version 2 snapshot contains unsupported key %q", forbidden)
+			}
+		}
+	} else {
+		required = append(required, "opencode_captured", "claude_captured", "agy_captured", "agy_existed", "agy_skill_count", "agents_captured", "agents_existed", "agents_skill_count")
 	}
 	for _, key := range append([]string{"format_version"}, required...) {
 		if _, exists := values[key]; !exists {
@@ -105,6 +117,9 @@ func ParseSnapshotMetadata(reader io.Reader) (SnapshotMetadata, error) {
 		if err == nil {
 			metadata.AGY.Captured, err = requiredBool(values, "agy_captured")
 		}
+		if version == 3 && err == nil {
+			metadata.Agents.Captured, err = requiredBool(values, "agents_captured")
+		}
 		if err != nil {
 			return SnapshotMetadata{}, err
 		}
@@ -119,11 +134,17 @@ func ParseSnapshotMetadata(reader io.Reader) (SnapshotMetadata, error) {
 	if err == nil {
 		metadata.Claude.SkillCount, err = requiredInt(values, "claude_skill_count")
 	}
-	if version == 2 && err == nil {
+	if (version == 2 || version == 3) && err == nil {
 		metadata.AGY.Existed, err = requiredBool(values, "agy_existed")
 	}
-	if version == 2 && err == nil {
+	if (version == 2 || version == 3) && err == nil {
 		metadata.AGY.SkillCount, err = requiredInt(values, "agy_skill_count")
+	}
+	if version == 3 && err == nil {
+		metadata.Agents.Existed, err = requiredBool(values, "agents_existed")
+	}
+	if version == 3 && err == nil {
+		metadata.Agents.SkillCount, err = requiredInt(values, "agents_skill_count")
 	}
 	if err != nil {
 		return SnapshotMetadata{}, err
@@ -134,19 +155,19 @@ func ParseSnapshotMetadata(reader io.Reader) (SnapshotMetadata, error) {
 	return metadata, nil
 }
 
-// SerializeSnapshotMetadata emits current Bash-compatible v2 metadata in the
+// SerializeSnapshotMetadata emits current Bash-compatible v3 metadata in the
 // same stable key order used by create_snapshot.
 func SerializeSnapshotMetadata(metadata SnapshotMetadata) ([]byte, error) {
-	metadata.FormatVersion = 2
+	metadata.FormatVersion = 3
 	if err := validateSnapshotMetadata(metadata); err != nil {
 		return nil, err
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "format_version=2\nid=%s\ncreated_utc=%s\nreason=%s\nsource_commit=%s\n", metadata.ID, metadata.CreatedUTC, metadata.Reason, metadata.SourceCommit)
+	fmt.Fprintf(&b, "format_version=3\nid=%s\ncreated_utc=%s\nreason=%s\nsource_commit=%s\n", metadata.ID, metadata.CreatedUTC, metadata.Reason, metadata.SourceCommit)
 	targets := []struct {
 		name   string
 		target SnapshotTarget
-	}{{"opencode", metadata.OpenCode}, {"claude", metadata.Claude}, {"agy", metadata.AGY}}
+	}{{"opencode", metadata.OpenCode}, {"claude", metadata.Claude}, {"agy", metadata.AGY}, {"agents", metadata.Agents}}
 	for _, item := range targets {
 		fmt.Fprintf(&b, "%s_captured=%d\n", item.name, boolInt(item.target.Captured))
 	}
@@ -193,7 +214,7 @@ func validateSnapshotTrees(snapshotPath string, metadata SnapshotMetadata) error
 		name   string
 		target SnapshotTarget
 	}{
-		{"opencode", metadata.OpenCode}, {"claude", metadata.Claude}, {"agy", metadata.AGY},
+		{"opencode", metadata.OpenCode}, {"claude", metadata.Claude}, {"agy", metadata.AGY}, {"agents", metadata.Agents},
 	} {
 		tree := filepath.Join(snapshotPath, item.name)
 		entry, statErr := os.Lstat(tree)
@@ -280,13 +301,13 @@ func validateSnapshotMetadata(metadata SnapshotMetadata) error {
 	if metadata.SourceCommit != "unknown" && !commitPattern.MatchString(metadata.SourceCommit) {
 		return fmt.Errorf("invalid snapshot source commit")
 	}
-	if metadata.FormatVersion != 1 && metadata.FormatVersion != 2 {
+	if metadata.FormatVersion != 1 && metadata.FormatVersion != 2 && metadata.FormatVersion != 3 {
 		return fmt.Errorf("unsupported snapshot metadata version")
 	}
 	for _, item := range []struct {
 		name   string
 		target SnapshotTarget
-	}{{"OpenCode", metadata.OpenCode}, {"Claude", metadata.Claude}, {"AGY", metadata.AGY}} {
+	}{{"OpenCode", metadata.OpenCode}, {"Claude", metadata.Claude}, {"AGY", metadata.AGY}, {"Agents", metadata.Agents}} {
 		if item.target.SkillCount < 0 {
 			return fmt.Errorf("invalid %s snapshot skill count", item.name)
 		}
@@ -297,8 +318,11 @@ func validateSnapshotMetadata(metadata SnapshotMetadata) error {
 			return fmt.Errorf("inconsistent %s metadata: absent target must have zero skills", item.name)
 		}
 	}
-	if metadata.FormatVersion == 1 && (metadata.OpenCode.Captured != true || metadata.Claude.Captured != true || metadata.AGY.Captured || metadata.AGY.Existed || metadata.AGY.SkillCount != 0) {
+	if metadata.FormatVersion == 1 && (metadata.OpenCode.Captured != true || metadata.Claude.Captured != true || metadata.AGY.Captured || metadata.AGY.Existed || metadata.AGY.SkillCount != 0 || metadata.Agents.Captured || metadata.Agents.Existed || metadata.Agents.SkillCount != 0) {
 		return fmt.Errorf("inconsistent version 1 capture semantics")
+	}
+	if metadata.FormatVersion == 2 && (metadata.Agents.Captured || metadata.Agents.Existed || metadata.Agents.SkillCount != 0) {
+		return fmt.Errorf("inconsistent version 2 capture semantics")
 	}
 	return nil
 }

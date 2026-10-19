@@ -18,6 +18,7 @@ func TestCreateSnapshotCapturesAllTargetsAndPreservesTree(t *testing.T) {
 		OpenCodeTarget: filepath.Join(root, "opencode"),
 		ClaudeTarget:   filepath.Join(root, "claude"),
 		AgyTarget:      filepath.Join(root, "agy"),
+		AgentsTarget:   filepath.Join(root, "agents"),
 		BackupRoot:     filepath.Join(root, "backups"),
 	}
 	for _, target := range []string{cfg.OpenCodeTarget, cfg.AgyTarget} {
@@ -57,9 +58,9 @@ func TestCreateSnapshotCapturesAllTargetsAndPreservesTree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ValidateSnapshot() error = %v", err)
 	}
-	if !metadata.OpenCode.Captured || !metadata.Claude.Captured || !metadata.AGY.Captured ||
-		!metadata.OpenCode.Existed || metadata.Claude.Existed || !metadata.AGY.Existed {
-		t.Fatalf("captured/existed states = OpenCode:%+v Claude:%+v AGY:%+v", metadata.OpenCode, metadata.Claude, metadata.AGY)
+	if !metadata.OpenCode.Captured || !metadata.Claude.Captured || !metadata.AGY.Captured || !metadata.Agents.Captured ||
+		!metadata.OpenCode.Existed || metadata.Claude.Existed || !metadata.AGY.Existed || metadata.Agents.Existed {
+		t.Fatalf("captured/existed states = OpenCode:%+v Claude:%+v AGY:%+v Agents:%+v", metadata.OpenCode, metadata.Claude, metadata.AGY, metadata.Agents)
 	}
 	for _, name := range []string{"opencode", "agy"} {
 		copyRoot := filepath.Join(snapshotPath, name)
@@ -95,6 +96,7 @@ func TestCreateSnapshotCanBeValidatedByBashList(t *testing.T) {
 		OpenCodeTarget: filepath.Join(targets, "opencode", "skills"),
 		ClaudeTarget:   filepath.Join(targets, "claude", "skills"),
 		AgyTarget:      filepath.Join(targets, "agy", "skills"),
+		AgentsTarget:   filepath.Join(targets, "agents", "skills"),
 		BackupRoot:     filepath.Join(home, "backups"),
 	}
 	makeSkill(t, cfg.OpenCodeTarget, "open-skill")
@@ -111,8 +113,9 @@ func TestCreateSnapshotCanBeValidatedByBashList(t *testing.T) {
 	}
 	if !metadata.OpenCode.Captured || !metadata.OpenCode.Existed || metadata.OpenCode.SkillCount != 1 ||
 		!metadata.Claude.Captured || !metadata.Claude.Existed || metadata.Claude.SkillCount != 1 ||
-		!metadata.AGY.Captured || metadata.AGY.Existed || metadata.AGY.SkillCount != 0 {
-		t.Fatalf("snapshot target semantics = OpenCode:%+v Claude:%+v AGY:%+v", metadata.OpenCode, metadata.Claude, metadata.AGY)
+		!metadata.AGY.Captured || metadata.AGY.Existed || metadata.AGY.SkillCount != 0 ||
+		!metadata.Agents.Captured || metadata.Agents.Existed || metadata.Agents.SkillCount != 0 {
+		t.Fatalf("snapshot target semantics = OpenCode:%+v Claude:%+v AGY:%+v Agents:%+v", metadata.OpenCode, metadata.Claude, metadata.AGY, metadata.Agents)
 	}
 	if _, err := os.Lstat(filepath.Join(snapshotPath, "agy")); !os.IsNotExist(err) {
 		t.Fatalf("absent AGY target was materialized: %v", err)
@@ -136,6 +139,7 @@ func TestCreateSnapshotCanBeValidatedByBashList(t *testing.T) {
 		"OPENCODE_SKILLS_DIR=" + cfg.OpenCodeTarget,
 		"CLAUDE_SKILLS_DIR=" + cfg.ClaudeTarget,
 		"AGY_SKILLS_DIR=" + cfg.AgyTarget,
+		"AGENTS_SKILLS_DIR=" + cfg.AgentsTarget,
 		"SKILL_BACKUP_DIR=" + cfg.BackupRoot,
 		"SKILL_INSTALLER_LOCK_FILE=" + filepath.Join(home, "installer.lock"),
 		"SKILL_INSTALLER_STATE_FILE=" + filepath.Join(home, "installer.state"),
@@ -205,6 +209,7 @@ func TestCreateSnapshotCleansTemporaryDirectoryOnCopyError(t *testing.T) {
 		OpenCodeTarget: filepath.Join(root, "opencode"),
 		ClaudeTarget:   filepath.Join(root, "claude"),
 		AgyTarget:      filepath.Join(root, "agy"),
+		AgentsTarget:   filepath.Join(root, "agents"),
 		BackupRoot:     filepath.Join(root, "backups"),
 	}
 	if err := os.MkdirAll(filepath.Join(cfg.OpenCodeTarget, "real-skill"), 0o700); err != nil {
@@ -238,6 +243,7 @@ func TestCreateSnapshotRejectsInvalidInputsBeforeCreatingBackupRoot(t *testing.T
 		OpenCodeTarget: filepath.Join(root, "opencode"),
 		ClaudeTarget:   filepath.Join(root, "claude"),
 		AgyTarget:      filepath.Join(root, "agy"),
+		AgentsTarget:   filepath.Join(root, "agents"),
 		BackupRoot:     filepath.Join(root, "backups"),
 	}
 	if _, err := CreateSnapshot(cfg, "invalid", "unknown"); err == nil {
@@ -339,6 +345,7 @@ func snapshotTestConfiguration(root string) Configuration {
 		OpenCodeTarget: filepath.Join(root, "opencode"),
 		ClaudeTarget:   filepath.Join(root, "claude"),
 		AgyTarget:      filepath.Join(root, "agy"),
+		AgentsTarget:   filepath.Join(root, "agents"),
 		BackupRoot:     filepath.Join(root, "backups"),
 	}
 }

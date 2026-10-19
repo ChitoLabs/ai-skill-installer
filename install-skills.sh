@@ -14,9 +14,11 @@ MIN_SKILL_COUNT="${SKILL_PACK_MIN_SKILL_COUNT:-$DEFAULT_MIN_SKILL_COUNT}"
 OPENCODE_TARGET_INPUT=""
 CLAUDE_TARGET_INPUT=""
 AGY_TARGET_INPUT=""
+AGENTS_TARGET_INPUT=""
 OPENCODE_TARGET_ORIGIN=""
 CLAUDE_TARGET_ORIGIN=""
 AGY_TARGET_ORIGIN=""
+AGENTS_TARGET_ORIGIN=""
 BACKUP_ROOT_INPUT="${SKILL_BACKUP_DIR:-$SCRIPT_DIR/BKOld}"
 LOCK_PATH_INPUT="${SKILL_INSTALLER_LOCK_FILE:-$SCRIPT_DIR/.install-skills.lock}"
 STATE_PATH_INPUT="${SKILL_INSTALLER_STATE_FILE:-$SCRIPT_DIR/.installed-skills.state}"
@@ -45,33 +47,42 @@ LOCK_FD=""
 DESIRED_OPENCODE_PREPARED=""
 DESIRED_CLAUDE_PREPARED=""
 DESIRED_AGY_PREPARED=""
+DESIRED_AGENTS_PREPARED=""
 DESIRED_OPENCODE_SOURCE=""
 DESIRED_CLAUDE_SOURCE=""
 DESIRED_AGY_SOURCE=""
+DESIRED_AGENTS_SOURCE=""
 ROLLBACK_OPENCODE_SOURCE=""
 ROLLBACK_CLAUDE_SOURCE=""
 ROLLBACK_AGY_SOURCE=""
+ROLLBACK_AGENTS_SOURCE=""
 DESIRED_OPENCODE_EXISTED=0
 DESIRED_CLAUDE_EXISTED=0
 DESIRED_AGY_EXISTED=0
+DESIRED_AGENTS_EXISTED=0
 DESIRED_OPENCODE_CAPTURED=0
 DESIRED_CLAUDE_CAPTURED=0
 DESIRED_AGY_CAPTURED=0
+DESIRED_AGENTS_CAPTURED=0
 ROLLBACK_OPENCODE_EXISTED=0
 ROLLBACK_CLAUDE_EXISTED=0
 ROLLBACK_AGY_EXISTED=0
+ROLLBACK_AGENTS_EXISTED=0
 
 TRANSACTION_STARTED=0
 COMMITTED=0
 OPENCODE_QUARANTINE=""
 CLAUDE_QUARANTINE=""
 AGY_QUARANTINE=""
+AGENTS_QUARANTINE=""
 OPENCODE_QUARANTINE_READY=0
 CLAUDE_QUARANTINE_READY=0
 AGY_QUARANTINE_READY=0
+AGENTS_QUARANTINE_READY=0
 OPENCODE_TRANSACTION_PARTICIPATED=0
 CLAUDE_TRANSACTION_PARTICIPATED=0
 AGY_TRANSACTION_PARTICIPATED=0
+AGENTS_TRANSACTION_PARTICIPATED=0
 
 META_FORMAT_VERSION=""
 META_ID=""
@@ -84,9 +95,12 @@ META_OPENCODE_EXISTED=""
 META_CLAUDE_EXISTED=""
 META_AGY_CAPTURED=0
 META_AGY_EXISTED=""
+META_AGENTS_CAPTURED=0
+META_AGENTS_EXISTED=""
 META_OPENCODE_SKILL_COUNT=""
 META_CLAUDE_SKILL_COUNT=""
 META_AGY_SKILL_COUNT=""
+META_AGENTS_SKILL_COUNT=""
 
 COLOR_BOLD=""
 COLOR_BLUE=""
@@ -172,6 +186,14 @@ resolve_skill_targets() {
     AGY_TARGET_INPUT="$HOME/.gemini/config/skills"
     AGY_TARGET_ORIGIN="HOME default"
   fi
+
+  if [[ -n "${AGENTS_SKILLS_DIR:-}" ]]; then
+    AGENTS_TARGET_INPUT="$AGENTS_SKILLS_DIR"
+    AGENTS_TARGET_ORIGIN="AGENTS_SKILLS_DIR"
+  else
+    AGENTS_TARGET_INPUT="$HOME/.agents/skills"
+    AGENTS_TARGET_ORIGIN="HOME default"
+  fi
 }
 
 usage() {
@@ -179,7 +201,7 @@ usage() {
 Usage: install-skills.sh COMMAND [ARGUMENT]
 
 Commands:
-  install [--force]      Install/update all three skill targets (noninteractive).
+  install [--force]      Install/update all four skill targets (noninteractive).
                          Without --force, a repeated install of the same source
                          commit is a no-op that reports "already up to date".
   dry-run, --dry-run   Clone and validate without changing targets or backups.
@@ -322,7 +344,6 @@ assert_safe_target() {
   local -a protected_paths=(
     "$(realpath -m -- "$HOME/.config/opencode/commands")"
     "$(realpath -m -- "$HOME/.engram")"
-    "$(realpath -m -- "$HOME/.agents/skills")"
     "$(realpath -m -- "$HOME/.gemini/antigravity-cli/skills")"
   )
 
@@ -345,9 +366,9 @@ assert_safe_backup_root() {
     "$OPENCODE_TARGET"
     "$CLAUDE_TARGET"
     "$AGY_TARGET"
+    "$AGENTS_TARGET"
     "$(realpath -m -- "$HOME/.config/opencode/commands")"
     "$(realpath -m -- "$HOME/.engram")"
-    "$(realpath -m -- "$HOME/.agents/skills")"
     "$(realpath -m -- "$HOME/.gemini/antigravity-cli/skills")"
   )
 
@@ -369,10 +390,10 @@ assert_safe_lock_path() {
     "$OPENCODE_TARGET"
     "$CLAUDE_TARGET"
     "$AGY_TARGET"
+    "$AGENTS_TARGET"
     "$BACKUP_ROOT"
     "$(realpath -m -- "$HOME/.config/opencode/commands")"
     "$(realpath -m -- "$HOME/.engram")"
-    "$(realpath -m -- "$HOME/.agents/skills")"
     "$(realpath -m -- "$HOME/.gemini/antigravity-cli/skills")"
   )
 
@@ -392,10 +413,10 @@ assert_safe_state_path() {
     "$OPENCODE_TARGET"
     "$CLAUDE_TARGET"
     "$AGY_TARGET"
+    "$AGENTS_TARGET"
     "$BACKUP_ROOT"
     "$(realpath -m -- "$HOME/.config/opencode/commands")"
     "$(realpath -m -- "$HOME/.engram")"
-    "$(realpath -m -- "$HOME/.agents/skills")"
     "$(realpath -m -- "$HOME/.gemini/antigravity-cli/skills")"
   )
 
@@ -421,6 +442,7 @@ validate_configuration() {
   OPENCODE_TARGET="$(normalize_path "$OPENCODE_TARGET_INPUT" "OpenCode target")"
   CLAUDE_TARGET="$(normalize_path "$CLAUDE_TARGET_INPUT" "Claude target")"
   AGY_TARGET="$(normalize_path "$AGY_TARGET_INPUT" "AGY target")"
+  AGENTS_TARGET="$(normalize_path "$AGENTS_TARGET_INPUT" "Agents target")"
   BACKUP_ROOT="$(normalize_path "$BACKUP_ROOT_INPUT" "Backup root")"
   LOCK_PATH="$(normalize_path "$LOCK_PATH_INPUT" "Installer lock path")"
   STATE_PATH="$(normalize_path "$STATE_PATH_INPUT" "Installer state path")"
@@ -428,15 +450,19 @@ validate_configuration() {
   assert_safe_target "$OPENCODE_TARGET"
   assert_safe_target "$CLAUDE_TARGET"
   assert_safe_target "$AGY_TARGET"
+  assert_safe_target "$AGENTS_TARGET"
   paths_overlap "$OPENCODE_TARGET" "$CLAUDE_TARGET" && fail "All skill targets must be distinct and non-overlapping"
   paths_overlap "$OPENCODE_TARGET" "$AGY_TARGET" && fail "All skill targets must be distinct and non-overlapping"
+  paths_overlap "$OPENCODE_TARGET" "$AGENTS_TARGET" && fail "All skill targets must be distinct and non-overlapping"
   paths_overlap "$CLAUDE_TARGET" "$AGY_TARGET" && fail "All skill targets must be distinct and non-overlapping"
+  paths_overlap "$CLAUDE_TARGET" "$AGENTS_TARGET" && fail "All skill targets must be distinct and non-overlapping"
+  paths_overlap "$AGY_TARGET" "$AGENTS_TARGET" && fail "All skill targets must be distinct and non-overlapping"
   assert_safe_backup_root
   assert_safe_lock_path
   assert_safe_state_path
 
   case "$TEST_FAILPOINT" in
-    ""|after-opencode-install|after-claude-install|after-agy-install|after-opencode-restore|after-claude-restore|after-agy-restore|quarantine-fidelity-install|quarantine-fidelity-restore|quarantine-cleanup|post-commit-report) ;;
+    ""|after-opencode-install|after-claude-install|after-agy-install|after-agents-install|after-opencode-restore|after-claude-restore|after-agy-restore|after-agents-restore|quarantine-fidelity-install|quarantine-fidelity-restore|quarantine-cleanup|post-commit-report) ;;
     *) fail "Unsupported SKILL_INSTALLER_TEST_FAILPOINT: $TEST_FAILPOINT" ;;
   esac
 }
@@ -473,10 +499,10 @@ validate_temporary_root() {
     "$OPENCODE_TARGET"
     "$CLAUDE_TARGET"
     "$AGY_TARGET"
+    "$AGENTS_TARGET"
     "$BACKUP_ROOT"
     "$(realpath -m -- "$HOME/.config/opencode/commands")"
     "$(realpath -m -- "$HOME/.engram")"
-    "$(realpath -m -- "$HOME/.agents/skills")"
     "$(realpath -m -- "$HOME/.gemini/antigravity-cli/skills")"
   )
 
@@ -785,9 +811,11 @@ create_snapshot() {
   local opencode_existed=0
   local claude_existed=0
   local agy_existed=0
+  local agents_existed=0
   local opencode_count=0
   local claude_count=0
   local agy_count=0
+  local agents_count=0
 
   [[ "$reason" == "install" || "$reason" == "pre-restore" ]] || fail "Invalid snapshot reason: $reason"
   [[ "$source_commit" == "unknown" || "$source_commit" =~ ^[0-9a-f]{40}$ ]] || fail "Invalid snapshot source commit"
@@ -813,9 +841,14 @@ create_snapshot() {
     agy_count="$(count_skill_manifests "$AGY_TARGET")"
     cp -a -- "$AGY_TARGET" "$SNAPSHOT_TEMP/agy"
   fi
+  if [[ -e "$AGENTS_TARGET" ]]; then
+    agents_existed=1
+    agents_count="$(count_skill_manifests "$AGENTS_TARGET")"
+    cp -a -- "$AGENTS_TARGET" "$SNAPSHOT_TEMP/agents"
+  fi
 
   printf '%s\n' \
-    'format_version=2' \
+    'format_version=3' \
     "id=$snapshot_id" \
     "created_utc=$created_utc" \
     "reason=$reason" \
@@ -823,12 +856,15 @@ create_snapshot() {
     'opencode_captured=1' \
     'claude_captured=1' \
     'agy_captured=1' \
+    'agents_captured=1' \
     "opencode_existed=$opencode_existed" \
     "claude_existed=$claude_existed" \
     "agy_existed=$agy_existed" \
+    "agents_existed=$agents_existed" \
     "opencode_skill_count=$opencode_count" \
     "claude_skill_count=$claude_count" \
     "agy_skill_count=$agy_count" \
+    "agents_skill_count=$agents_count" \
     >"$SNAPSHOT_TEMP/metadata"
 
   mv -- "$SNAPSHOT_TEMP" "$BACKUP_ROOT/$snapshot_id"
@@ -862,15 +898,28 @@ load_metadata() {
   local opencode_captured=""
   local claude_captured=""
   local agy_captured=""
+  local agents_captured=""
   local required_key
   local forbidden_key
   local -A seen=()
   local -a common_required_keys=(format_version id created_utc reason source_commit opencode_existed claude_existed opencode_skill_count claude_skill_count)
-  local -a version_one_forbidden_keys=(opencode_captured claude_captured agy_captured agy_existed agy_skill_count)
+  local -a version_one_forbidden_keys=(
+    opencode_captured claude_captured agy_captured agy_existed agy_skill_count
+    agents_captured agents_existed agents_skill_count
+  )
+  local -a version_two_forbidden_keys=(
+    agents_captured agents_existed agents_skill_count
+  )
   local -a version_two_required_target_keys=(
     opencode_captured opencode_existed opencode_skill_count
     claude_captured claude_existed claude_skill_count
     agy_captured agy_existed agy_skill_count
+  )
+  local -a version_three_required_target_keys=(
+    opencode_captured opencode_existed opencode_skill_count
+    claude_captured claude_existed claude_skill_count
+    agy_captured agy_existed agy_skill_count
+    agents_captured agents_existed agents_skill_count
   )
 
   META_ID=""
@@ -884,9 +933,12 @@ load_metadata() {
   META_CLAUDE_EXISTED=""
   META_AGY_CAPTURED=0
   META_AGY_EXISTED=""
+  META_AGENTS_CAPTURED=0
+  META_AGENTS_EXISTED=""
   META_OPENCODE_SKILL_COUNT=""
   META_CLAUDE_SKILL_COUNT=""
   META_AGY_SKILL_COUNT=""
+  META_AGENTS_SKILL_COUNT=""
 
   [[ -f "$metadata_file" && ! -L "$metadata_file" ]] || fail "Snapshot metadata is missing or unsafe: $metadata_file"
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -894,7 +946,7 @@ load_metadata() {
     key="${line%%=*}"
     value="${line#*=}"
     case "$key" in
-      format_version|id|created_utc|reason|source_commit|opencode_captured|claude_captured|agy_captured|opencode_existed|claude_existed|agy_existed|opencode_skill_count|claude_skill_count|agy_skill_count) ;;
+      format_version|id|created_utc|reason|source_commit|opencode_captured|claude_captured|agy_captured|agents_captured|opencode_existed|claude_existed|agy_existed|agents_existed|opencode_skill_count|claude_skill_count|agy_skill_count|agents_skill_count) ;;
       *) fail "Unknown metadata key '$key': $metadata_file" ;;
     esac
     [[ -z "${seen[$key]+x}" ]] || fail "Duplicate metadata key '$key': $metadata_file"
@@ -909,17 +961,20 @@ load_metadata() {
       opencode_captured) opencode_captured="$value" ;;
       claude_captured) claude_captured="$value" ;;
       agy_captured) agy_captured="$value" ;;
+      agents_captured) agents_captured="$value" ;;
       opencode_existed) META_OPENCODE_EXISTED="$value" ;;
       claude_existed) META_CLAUDE_EXISTED="$value" ;;
       agy_existed) META_AGY_EXISTED="$value" ;;
+      agents_existed) META_AGENTS_EXISTED="$value" ;;
       opencode_skill_count) META_OPENCODE_SKILL_COUNT="$value" ;;
       claude_skill_count) META_CLAUDE_SKILL_COUNT="$value" ;;
       agy_skill_count) META_AGY_SKILL_COUNT="$value" ;;
+      agents_skill_count) META_AGENTS_SKILL_COUNT="$value" ;;
     esac
   done <"$metadata_file"
 
   [[ -n "${seen[format_version]+x}" ]] || fail "Missing required metadata key 'format_version'"
-  [[ "$format_version" == "1" || "$format_version" == "2" ]] || fail "Unsupported snapshot metadata version: $format_version"
+  [[ "$format_version" == "1" || "$format_version" == "2" || "$format_version" == "3" ]] || fail "Unsupported snapshot metadata version: $format_version"
   for required_key in "${common_required_keys[@]}"; do
     [[ -n "${seen[$required_key]+x}" ]] || \
       fail "Missing required metadata key '$required_key' for version $format_version"
@@ -932,12 +987,27 @@ load_metadata() {
     opencode_captured=1
     claude_captured=1
     agy_captured=0
+    agents_captured=0
     META_AGY_EXISTED=0
     META_AGY_SKILL_COUNT=0
-  else
+    META_AGENTS_EXISTED=0
+    META_AGENTS_SKILL_COUNT=0
+  elif [[ "$format_version" == "2" ]]; then
+    for forbidden_key in "${version_two_forbidden_keys[@]}"; do
+      [[ -z "${seen[$forbidden_key]+x}" ]] || \
+        fail "Version 2 snapshot contains unsupported key '$forbidden_key'"
+    done
     for required_key in "${version_two_required_target_keys[@]}"; do
       [[ -n "${seen[$required_key]+x}" ]] || \
         fail "Missing required metadata key '$required_key' for version 2"
+    done
+    agents_captured=0
+    META_AGENTS_EXISTED=0
+    META_AGENTS_SKILL_COUNT=0
+  else
+    for required_key in "${version_three_required_target_keys[@]}"; do
+      [[ -n "${seen[$required_key]+x}" ]] || \
+        fail "Missing required metadata key '$required_key' for version 3"
     done
   fi
 
@@ -949,9 +1019,11 @@ load_metadata() {
   validate_target_metadata_consistency "OpenCode" "$opencode_captured" "$META_OPENCODE_EXISTED" "$META_OPENCODE_SKILL_COUNT"
   validate_target_metadata_consistency "Claude" "$claude_captured" "$META_CLAUDE_EXISTED" "$META_CLAUDE_SKILL_COUNT"
   validate_target_metadata_consistency "AGY" "$agy_captured" "$META_AGY_EXISTED" "$META_AGY_SKILL_COUNT"
+  validate_target_metadata_consistency "Agents" "$agents_captured" "$META_AGENTS_EXISTED" "$META_AGENTS_SKILL_COUNT"
   META_OPENCODE_CAPTURED="$opencode_captured"
   META_CLAUDE_CAPTURED="$claude_captured"
   META_AGY_CAPTURED="$agy_captured"
+  META_AGENTS_CAPTURED="$agents_captured"
 }
 
 validate_snapshot() {
@@ -1002,6 +1074,19 @@ validate_snapshot() {
   else
     [[ ! -e "$snapshot_path/agy" && ! -L "$snapshot_path/agy" ]] || fail "Uncaptured AGY snapshot contains a target tree: $snapshot_id"
   fi
+
+  if ((META_AGENTS_CAPTURED)); then
+    if ((META_AGENTS_EXISTED)); then
+      [[ -d "$snapshot_path/agents" && ! -L "$snapshot_path/agents" ]] || fail "Agents snapshot tree is missing or unsafe: $snapshot_id"
+      assert_no_protected_codegraph "$snapshot_path/agents"
+      actual_count="$(count_skill_manifests "$snapshot_path/agents")"
+      [[ "$actual_count" == "$META_AGENTS_SKILL_COUNT" ]] || fail "Agents snapshot skill count does not match metadata: $snapshot_id"
+    else
+      [[ ! -e "$snapshot_path/agents" && ! -L "$snapshot_path/agents" ]] || fail "Unexpected Agents tree in absent snapshot state: $snapshot_id"
+    fi
+  else
+    [[ ! -e "$snapshot_path/agents" && ! -L "$snapshot_path/agents" ]] || fail "Uncaptured Agents snapshot contains a target tree: $snapshot_id"
+  fi
 }
 
 prepare_snapshot_state() {
@@ -1012,9 +1097,12 @@ prepare_snapshot_state() {
   local claude_existed="$5"
   local agy_captured="$6"
   local agy_existed="$7"
-  local opencode_output_variable="$8"
-  local claude_output_variable="$9"
-  local agy_output_variable="${10}"
+  local agents_captured="$8"
+  local agents_existed="$9"
+  local opencode_output_variable="${10}"
+  local claude_output_variable="${11}"
+  local agy_output_variable="${12}"
+  local agents_output_variable="${13}"
 
   if ((opencode_captured && opencode_existed)); then
     prepare_tree "$BACKUP_ROOT/$snapshot_id/opencode" "$OPENCODE_TARGET" "$opencode_output_variable"
@@ -1030,6 +1118,11 @@ prepare_snapshot_state() {
     prepare_tree "$BACKUP_ROOT/$snapshot_id/agy" "$AGY_TARGET" "$agy_output_variable"
   else
     printf -v "$agy_output_variable" '%s' ""
+  fi
+  if ((agents_captured && agents_existed)); then
+    prepare_tree "$BACKUP_ROOT/$snapshot_id/agents" "$AGENTS_TARGET" "$agents_output_variable"
+  else
+    printf -v "$agents_output_variable" '%s' ""
   fi
 }
 
@@ -1116,6 +1209,10 @@ rollback_transaction() {
     restore_quarantined_target "AGY" "$AGY_TARGET" "$AGY_QUARANTINE" \
       "$AGY_QUARANTINE_READY" "$ROLLBACK_AGY_EXISTED" || result=1
   fi
+  if ((AGENTS_TRANSACTION_PARTICIPATED)); then
+    restore_quarantined_target "Agents" "$AGENTS_TARGET" "$AGENTS_QUARANTINE" \
+      "$AGENTS_QUARANTINE_READY" "$ROLLBACK_AGENTS_EXISTED" || result=1
+  fi
 
   if ((result == 0)); then
     printf 'Rollback completed. All original targets were restored.\n' >&2
@@ -1137,6 +1234,9 @@ inject_quarantine_fidelity_state() {
   fi
   if ((AGY_TRANSACTION_PARTICIPATED)); then
     [[ ! -d "$AGY_TARGET" ]] || printf 'changed-after-snapshot\n' >"$AGY_TARGET/.quarantine-fidelity"
+  fi
+  if ((AGENTS_TRANSACTION_PARTICIPATED)); then
+    [[ ! -d "$AGENTS_TARGET" ]] || printf 'changed-after-snapshot\n' >"$AGENTS_TARGET/.quarantine-fidelity"
   fi
 }
 
@@ -1164,6 +1264,7 @@ run_transaction() {
   OPENCODE_TRANSACTION_PARTICIPATED="$DESIRED_OPENCODE_CAPTURED"
   CLAUDE_TRANSACTION_PARTICIPATED="$DESIRED_CLAUDE_CAPTURED"
   AGY_TRANSACTION_PARTICIPATED="$DESIRED_AGY_CAPTURED"
+  AGENTS_TRANSACTION_PARTICIPATED="$DESIRED_AGENTS_CAPTURED"
   if ((OPENCODE_TRANSACTION_PARTICIPATED)); then
     OPENCODE_QUARANTINE="${OPENCODE_TARGET}.transaction.$transaction_token"
     [[ ! -e "$OPENCODE_QUARANTINE" && ! -L "$OPENCODE_QUARANTINE" ]] || fail "Transaction path already exists: $OPENCODE_QUARANTINE"
@@ -1175,6 +1276,10 @@ run_transaction() {
   if ((AGY_TRANSACTION_PARTICIPATED)); then
     AGY_QUARANTINE="${AGY_TARGET}.transaction.$transaction_token"
     [[ ! -e "$AGY_QUARANTINE" && ! -L "$AGY_QUARANTINE" ]] || fail "Transaction path already exists: $AGY_QUARANTINE"
+  fi
+  if ((AGENTS_TRANSACTION_PARTICIPATED)); then
+    AGENTS_QUARANTINE="${AGENTS_TARGET}.transaction.$transaction_token"
+    [[ ! -e "$AGENTS_QUARANTINE" && ! -L "$AGENTS_QUARANTINE" ]] || fail "Transaction path already exists: $AGENTS_QUARANTINE"
   fi
 
   TRANSACTION_STARTED=1
@@ -1207,6 +1312,15 @@ run_transaction() {
   elif ((AGY_TRANSACTION_PARTICIPATED)); then
     AGY_QUARANTINE_READY=2
     ROLLBACK_AGY_EXISTED=0
+  fi
+  if ((AGENTS_TRANSACTION_PARTICIPATED)) && [[ -e "$AGENTS_TARGET" ]]; then
+    AGENTS_QUARANTINE_READY=1
+    ROLLBACK_AGENTS_EXISTED=1
+    mv -- "$AGENTS_TARGET" "$AGENTS_QUARANTINE"
+    AGENTS_QUARANTINE_READY=2
+  elif ((AGENTS_TRANSACTION_PARTICIPATED)); then
+    AGENTS_QUARANTINE_READY=2
+    ROLLBACK_AGENTS_EXISTED=0
   fi
 
   if ((DESIRED_OPENCODE_CAPTURED && DESIRED_OPENCODE_EXISTED)); then
@@ -1242,6 +1356,17 @@ run_transaction() {
   if [[ "$operation" == "restore" && "$TEST_FAILPOINT" == "after-agy-restore" ]]; then
     fail "Injected test failure after AGY restoration"
   fi
+
+  if ((DESIRED_AGENTS_CAPTURED && DESIRED_AGENTS_EXISTED)); then
+    mv -- "$DESIRED_AGENTS_PREPARED" "$AGENTS_TARGET"
+    DESIRED_AGENTS_PREPARED=""
+  fi
+  if [[ "$operation" == "install" && "$TEST_FAILPOINT" == "after-agents-install" ]]; then
+    fail "Injected test failure after Agents installation"
+  fi
+  if [[ "$operation" == "restore" && "$TEST_FAILPOINT" == "after-agents-restore" ]]; then
+    fail "Injected test failure after Agents restoration"
+  fi
   if [[ "$TEST_FAILPOINT" == "quarantine-fidelity-$operation" ]]; then
     fail "Injected test failure after all quarantined originals were replaced"
   fi
@@ -1254,6 +1379,9 @@ run_transaction() {
   fi
   if ((DESIRED_AGY_CAPTURED)); then
     state_matches "AGY" "$AGY_TARGET" "$DESIRED_AGY_SOURCE" "$DESIRED_AGY_EXISTED" || fail "AGY post-transaction validation failed"
+  fi
+  if ((DESIRED_AGENTS_CAPTURED)); then
+    state_matches "Agents" "$AGENTS_TARGET" "$DESIRED_AGENTS_SOURCE" "$DESIRED_AGENTS_EXISTED" || fail "Agents post-transaction validation failed"
   fi
   COMMITTED=1
 
@@ -1278,6 +1406,13 @@ run_transaction() {
       cleanup_failed=1
     fi
   fi
+  if ((AGENTS_TRANSACTION_PARTICIPATED)); then
+    if cleanup_quarantine_path "Agents" "$AGENTS_QUARANTINE"; then
+      AGENTS_QUARANTINE=""
+    else
+      cleanup_failed=1
+    fi
+  fi
   if ((cleanup_failed)); then
     post_commit_warn "Transaction committed successfully, but quarantine cleanup was incomplete. The new targets and BKOld snapshot are valid; inspect the retained transaction paths above."
   fi
@@ -1292,9 +1427,11 @@ list_backups() {
   local opencode_label
   local claude_label
   local agy_label
+  local agents_label
   local opencode_count_label
   local claude_count_label
   local agy_count_label
+  local agents_count_label
 
   if [[ ! -d "$BACKUP_ROOT" ]]; then
     log "No backups found in $BACKUP_ROOT."
@@ -1319,9 +1456,11 @@ list_backups() {
     opencode_label="not captured"
     claude_label="not captured"
     agy_label="not captured"
+    agents_label="not captured"
     opencode_count_label="n/a"
     claude_count_label="n/a"
     agy_count_label="n/a"
+    agents_count_label="n/a"
     if ((META_OPENCODE_CAPTURED)); then
       opencode_label="no"
       ((META_OPENCODE_EXISTED)) && opencode_label="yes"
@@ -1337,11 +1476,16 @@ list_backups() {
       ((META_AGY_EXISTED)) && agy_label="yes"
       agy_count_label="$META_AGY_SKILL_COUNT"
     fi
+    if ((META_AGENTS_CAPTURED)); then
+      agents_label="no"
+      ((META_AGENTS_EXISTED)) && agents_label="yes"
+      agents_count_label="$META_AGENTS_SKILL_COUNT"
+    fi
     printf '%s\n' "$META_ID"
-    printf '  UTC: %s | Reason: %s | Targets: OpenCode %s, Claude %s, AGY %s\n' \
-      "$META_CREATED_UTC" "$META_REASON" "$opencode_label" "$claude_label" "$agy_label"
-    printf '  Skills: %s/%s/%s | Source commit: %s\n' \
-      "$opencode_count_label" "$claude_count_label" "$agy_count_label" "$META_SOURCE_COMMIT"
+    printf '  UTC: %s | Reason: %s | Targets: OpenCode %s, Claude %s, AGY %s, Agents %s\n' \
+      "$META_CREATED_UTC" "$META_REASON" "$opencode_label" "$claude_label" "$agy_label" "$agents_label"
+    printf '  Skills: %s/%s/%s/%s | Source commit: %s\n' \
+      "$opencode_count_label" "$claude_count_label" "$agy_count_label" "$agents_count_label" "$META_SOURCE_COMMIT"
   done
   shopt -u nullglob
 
@@ -1420,6 +1564,7 @@ run_install() {
   log "OpenCode target: $OPENCODE_TARGET (source: $OPENCODE_TARGET_ORIGIN)"
   log "Claude target: $CLAUDE_TARGET (source: $CLAUDE_TARGET_ORIGIN)"
   log "AGY target: $AGY_TARGET (source: $AGY_TARGET_ORIGIN)"
+  log "Agents target: $AGENTS_TARGET (source: $AGENTS_TARGET_ORIGIN)"
   log "Backup root: $BACKUP_ROOT"
 
   if resolve_installed_commit; then
@@ -1451,7 +1596,7 @@ run_install() {
 
   if ((DRY_RUN)); then
     success "Dry run complete; no target, replacement, or backup directory was created."
-    warn "A real replacement removes existing skills from all three targets. Reinstall Gentle AI afterward, then restart OpenCode, Claude, and AGY."
+    warn "A real replacement removes existing skills from all four targets. Reinstall Gentle AI afterward, then restart OpenCode, Claude, AGY, and Pi/Gentle Shell."
     return 0
   fi
 
@@ -1465,15 +1610,19 @@ run_install() {
   validate_skill_tree "$DESIRED_CLAUDE_PREPARED" "$SOURCE_SKILL_COUNT"
   prepare_tree "$SOURCE_SKILLS_DIR" "$AGY_TARGET" DESIRED_AGY_PREPARED
   validate_skill_tree "$DESIRED_AGY_PREPARED" "$SOURCE_SKILL_COUNT"
+  prepare_tree "$SOURCE_SKILLS_DIR" "$AGENTS_TARGET" DESIRED_AGENTS_PREPARED
+  validate_skill_tree "$DESIRED_AGENTS_PREPARED" "$SOURCE_SKILL_COUNT"
 
   create_snapshot "install" "$SOURCE_COMMIT"
   validate_snapshot "$LAST_SNAPSHOT_ID"
   ROLLBACK_OPENCODE_EXISTED="$META_OPENCODE_EXISTED"
   ROLLBACK_CLAUDE_EXISTED="$META_CLAUDE_EXISTED"
   ROLLBACK_AGY_EXISTED="$META_AGY_EXISTED"
+  ROLLBACK_AGENTS_EXISTED="$META_AGENTS_EXISTED"
   ROLLBACK_OPENCODE_SOURCE="$BACKUP_ROOT/$LAST_SNAPSHOT_ID/opencode"
   ROLLBACK_CLAUDE_SOURCE="$BACKUP_ROOT/$LAST_SNAPSHOT_ID/claude"
   ROLLBACK_AGY_SOURCE="$BACKUP_ROOT/$LAST_SNAPSHOT_ID/agy"
+  ROLLBACK_AGENTS_SOURCE="$BACKUP_ROOT/$LAST_SNAPSHOT_ID/agents"
 
   DESIRED_OPENCODE_EXISTED=1
   DESIRED_CLAUDE_EXISTED=1
@@ -1481,15 +1630,18 @@ run_install() {
   DESIRED_CLAUDE_CAPTURED=1
   DESIRED_AGY_CAPTURED=1
   DESIRED_AGY_EXISTED=1
+  DESIRED_AGENTS_CAPTURED=1
+  DESIRED_AGENTS_EXISTED=1
   DESIRED_OPENCODE_SOURCE="$SOURCE_SKILLS_DIR"
   DESIRED_CLAUDE_SOURCE="$SOURCE_SKILLS_DIR"
   DESIRED_AGY_SOURCE="$SOURCE_SKILLS_DIR"
+  DESIRED_AGENTS_SOURCE="$SOURCE_SKILLS_DIR"
   run_transaction "install"
 
   write_installed_state "$SOURCE_COMMIT" "$SOURCE_SKILL_COUNT"
   post_commit_success "Backup snapshot: $LAST_SNAPSHOT_ID"
-  post_commit_success "Installed $SOURCE_SKILL_COUNT skills from commit $SOURCE_COMMIT into OpenCode, Claude, and AGY."
-  post_commit_warn "This replacement removed existing skills from all three directories. Reinstall Gentle AI, then restart OpenCode, Claude, and AGY."
+  post_commit_success "Installed $SOURCE_SKILL_COUNT skills from commit $SOURCE_COMMIT into OpenCode, Claude, AGY, and Agents."
+  post_commit_warn "This replacement removed existing skills from all four directories. Reinstall Gentle AI, then restart OpenCode, Claude, AGY, and Pi/Gentle Shell."
 }
 
 run_restore() {
@@ -1501,6 +1653,8 @@ run_restore() {
   local selected_claude_existed
   local selected_agy_captured
   local selected_agy_existed
+  local selected_agents_captured
+  local selected_agents_existed
   local safety_id
 
   acquire_installer_lock
@@ -1512,6 +1666,8 @@ run_restore() {
   selected_claude_existed="$META_CLAUDE_EXISTED"
   selected_agy_captured="$META_AGY_CAPTURED"
   selected_agy_existed="${META_AGY_EXISTED:-0}"
+  selected_agents_captured="$META_AGENTS_CAPTURED"
+  selected_agents_existed="${META_AGENTS_EXISTED:-0}"
 
   DESIRED_OPENCODE_CAPTURED="$selected_opencode_captured"
   DESIRED_OPENCODE_EXISTED="$selected_opencode_existed"
@@ -1519,12 +1675,16 @@ run_restore() {
   DESIRED_CLAUDE_EXISTED="$selected_claude_existed"
   DESIRED_AGY_CAPTURED="$selected_agy_captured"
   DESIRED_AGY_EXISTED="$selected_agy_existed"
+  DESIRED_AGENTS_CAPTURED="$selected_agents_captured"
+  DESIRED_AGENTS_EXISTED="$selected_agents_existed"
   DESIRED_OPENCODE_SOURCE="$BACKUP_ROOT/$selected_id/opencode"
   DESIRED_CLAUDE_SOURCE="$BACKUP_ROOT/$selected_id/claude"
   DESIRED_AGY_SOURCE="$BACKUP_ROOT/$selected_id/agy"
+  DESIRED_AGENTS_SOURCE="$BACKUP_ROOT/$selected_id/agents"
   prepare_snapshot_state "$selected_id" "$DESIRED_OPENCODE_CAPTURED" "$DESIRED_OPENCODE_EXISTED" \
     "$DESIRED_CLAUDE_CAPTURED" "$DESIRED_CLAUDE_EXISTED" "$DESIRED_AGY_CAPTURED" "$DESIRED_AGY_EXISTED" \
-    DESIRED_OPENCODE_PREPARED DESIRED_CLAUDE_PREPARED DESIRED_AGY_PREPARED
+    "$DESIRED_AGENTS_CAPTURED" "$DESIRED_AGENTS_EXISTED" \
+    DESIRED_OPENCODE_PREPARED DESIRED_CLAUDE_PREPARED DESIRED_AGY_PREPARED DESIRED_AGENTS_PREPARED
 
   create_snapshot "pre-restore" "$selected_commit"
   safety_id="$LAST_SNAPSHOT_ID"
@@ -1532,9 +1692,11 @@ run_restore() {
   ROLLBACK_OPENCODE_EXISTED="$META_OPENCODE_EXISTED"
   ROLLBACK_CLAUDE_EXISTED="$META_CLAUDE_EXISTED"
   ROLLBACK_AGY_EXISTED="$META_AGY_EXISTED"
+  ROLLBACK_AGENTS_EXISTED="$META_AGENTS_EXISTED"
   ROLLBACK_OPENCODE_SOURCE="$BACKUP_ROOT/$safety_id/opencode"
   ROLLBACK_CLAUDE_SOURCE="$BACKUP_ROOT/$safety_id/claude"
   ROLLBACK_AGY_SOURCE="$BACKUP_ROOT/$safety_id/agy"
+  ROLLBACK_AGENTS_SOURCE="$BACKUP_ROOT/$safety_id/agents"
 
   if (( ! DESIRED_OPENCODE_CAPTURED )); then
     DESIRED_OPENCODE_EXISTED="$ROLLBACK_OPENCODE_EXISTED"
@@ -1551,6 +1713,11 @@ run_restore() {
     DESIRED_AGY_SOURCE="$ROLLBACK_AGY_SOURCE"
     info "AGY was not captured and its current target will remain unchanged."
   fi
+  if (( ! DESIRED_AGENTS_CAPTURED )); then
+    DESIRED_AGENTS_EXISTED="$ROLLBACK_AGENTS_EXISTED"
+    DESIRED_AGENTS_SOURCE="$ROLLBACK_AGENTS_SOURCE"
+    info "Agents was not captured and its current target will remain unchanged."
+  fi
 
   info "Restoring snapshot $selected_id across all captured targets..."
   run_transaction "restore"
@@ -1559,8 +1726,8 @@ run_restore() {
   fi
   post_commit_success "Restored snapshot: $selected_id"
   post_commit_success "Pre-restore safety snapshot: $safety_id"
-  if ((selected_opencode_captured && selected_claude_captured && selected_agy_captured)); then
-    post_commit_warn "Restart OpenCode, Claude, and AGY so they reload the restored skills. Reinstall Gentle AI if the restored snapshot does not contain it."
+  if ((selected_opencode_captured && selected_claude_captured && selected_agy_captured && selected_agents_captured)); then
+    post_commit_warn "Restart OpenCode, Claude, AGY, and Pi/Gentle Shell so they reload the restored skills. Reinstall Gentle AI if the restored snapshot does not contain it."
   else
     post_commit_warn "Restart applications whose captured skill targets were restored. Uncaptured targets were left unchanged."
   fi
@@ -1587,7 +1754,7 @@ interactive_restore() {
   }
   require_safe_backup_id "$selected_id"
   validate_snapshot "$selected_id"
-  warn "Restore replaces all captured target states and creates a new three-target pre-restore safety snapshot."
+  warn "Restore replaces all captured target states and creates a new four-target pre-restore safety snapshot."
   if confirm "Restore $selected_id?"; then
     "$SCRIPT_PATH" restore "$selected_id"
   else
@@ -1601,7 +1768,7 @@ interactive_menu() {
   [[ -t 0 && -t 1 ]] || fail "The interactive menu requires a TTY"
   while :; do
     printf '\n%sChito Skill Installer%s\n' "$COLOR_BOLD" "$COLOR_RESET"
-    printf '  1) Install/update all three targets\n'
+    printf '  1) Install/update all four targets\n'
     printf '  2) Dry run\n'
     printf '  3) Check for updates (status)\n'
     printf '  4) List backups\n'
@@ -1613,7 +1780,7 @@ interactive_menu() {
 
     case "$choice" in
       1)
-        warn "Install fully replaces all three skill directories after creating a managed snapshot."
+        warn "Install fully replaces all four skill directories after creating a managed snapshot."
         if confirm "Continue with install/update?"; then
           "$SCRIPT_PATH" install
         else
@@ -1641,6 +1808,7 @@ cleanup() {
   cleanup_path "$DESIRED_OPENCODE_PREPARED"
   cleanup_path "$DESIRED_CLAUDE_PREPARED"
   cleanup_path "$DESIRED_AGY_PREPARED"
+  cleanup_path "$DESIRED_AGENTS_PREPARED"
   cleanup_path "$SNAPSHOT_TEMP"
   cleanup_path "$STAGING_DIR"
 }

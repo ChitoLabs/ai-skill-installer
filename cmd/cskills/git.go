@@ -83,7 +83,7 @@ func validateCloneStagingRoot(cfg Configuration, environment map[string]string) 
 	if err := rejectCodegraphPath(resolved, "Temporary root"); err != nil {
 		return "", err
 	}
-	protected := append(protectedPaths(cfg.HomeDir), cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.BackupRoot)
+	protected := append(protectedPaths(cfg.HomeDir), cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget, cfg.BackupRoot)
 	if err := rejectOverlaps("Temporary root", resolved, protected); err != nil {
 		return "", err
 	}

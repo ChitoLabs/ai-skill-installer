@@ -26,6 +26,7 @@ func restoreSnapshotWithHooks(cfg Configuration, snapshotID string, hooks transa
 		{"opencode", cfg.OpenCodeTarget},
 		{"claude", cfg.ClaudeTarget},
 		{"agy", cfg.AgyTarget},
+		{"agents", cfg.AgentsTarget},
 	}
 	for _, target := range targets {
 		if pathsOverlap(snapshotPath, target.path) {
@@ -86,6 +87,11 @@ func restoreSnapshotWithHooks(cfg Configuration, snapshotID string, hooks transa
 				if metadata.AGY.Existed {
 					replacements[index].StagedPath = filepath.Join(snapshotPath, targets[index].name)
 				}
+			case 3:
+				replacements[index].Preserve = !metadata.Agents.Captured
+				if metadata.Agents.Existed {
+					replacements[index].StagedPath = filepath.Join(snapshotPath, targets[index].name)
+				}
 			}
 		}
 		var stagedPaths []string
@@ -97,6 +103,9 @@ func restoreSnapshotWithHooks(cfg Configuration, snapshotID string, hooks transa
 		for index, target := range targets {
 			if replacements[index].Preserve || replacements[index].StagedPath == "" {
 				continue
+			}
+			if err := os.MkdirAll(filepath.Dir(target.path), 0o700); err != nil {
+				return nil, "", cleanup, fmt.Errorf("create %s target parent: %w", target.name, err)
 			}
 			container, err := os.MkdirTemp(filepath.Dir(target.path), ".cskill-restore-stage-")
 			if err != nil {

@@ -24,29 +24,52 @@ func validV2Metadata() SnapshotMetadata {
 	}
 }
 
+func validV3Metadata() SnapshotMetadata {
+	return SnapshotMetadata{
+		FormatVersion: 3,
+		ID:            testSnapshotID,
+		CreatedUTC:    "2026-09-24T12:34:56Z",
+		Reason:        "install",
+		SourceCommit:  strings.Repeat("a", 40),
+		OpenCode:      SnapshotTarget{Captured: true, Existed: true, SkillCount: 1},
+		Claude:        SnapshotTarget{Captured: true},
+		AGY:           SnapshotTarget{Captured: true, Existed: true, SkillCount: 2},
+		Agents:        SnapshotTarget{Captured: true, Existed: true, SkillCount: 1},
+	}
+}
+
 func TestSnapshotMetadataV1AndV2Compatibility(t *testing.T) {
 	v1 := "format_version=1\nid=" + testSnapshotID + "\ncreated_utc=2026-09-24T12:34:56Z\nreason=pre-restore\nsource_commit=unknown\nopencode_existed=1\nclaude_existed=0\nopencode_skill_count=3\nclaude_skill_count=0\n"
 	parsed, err := ParseSnapshotMetadata(strings.NewReader(v1))
 	if err != nil {
 		t.Fatalf("ParseSnapshotMetadata(v1) error = %v", err)
 	}
-	if !parsed.OpenCode.Captured || !parsed.Claude.Captured || parsed.AGY.Captured || parsed.AGY.Existed || parsed.AGY.SkillCount != 0 {
+	if !parsed.OpenCode.Captured || !parsed.Claude.Captured || parsed.AGY.Captured || parsed.AGY.Existed || parsed.AGY.SkillCount != 0 || parsed.Agents.Captured || parsed.Agents.Existed || parsed.Agents.SkillCount != 0 {
 		t.Fatalf("v1 capture semantics = %+v", parsed)
 	}
 
-	want := validV2Metadata()
+	v2 := fmt.Sprintf("format_version=2\nid=%s\ncreated_utc=2026-09-24T12:34:56Z\nreason=install\nsource_commit=%s\nopencode_captured=1\nclaude_captured=1\nagy_captured=1\nopencode_existed=1\nclaude_existed=0\nagy_existed=1\nopencode_skill_count=1\nclaude_skill_count=0\nagy_skill_count=2\n", testSnapshotID, strings.Repeat("a", 40))
+	parsedV2, err := ParseSnapshotMetadata(strings.NewReader(v2))
+	if err != nil {
+		t.Fatalf("ParseSnapshotMetadata(v2) error = %v", err)
+	}
+	if !parsedV2.OpenCode.Captured || !parsedV2.Claude.Captured || !parsedV2.AGY.Captured || parsedV2.Agents.Captured || parsedV2.Agents.Existed || parsedV2.Agents.SkillCount != 0 {
+		t.Fatalf("v2 capture semantics = %+v", parsedV2)
+	}
+
+	want := validV3Metadata()
 	want.AGY.SkillCount = 2
 	encoded, err := SerializeSnapshotMetadata(want)
 	if err != nil {
 		t.Fatalf("SerializeSnapshotMetadata() error = %v", err)
 	}
-	wantBytes := []byte(fmt.Sprintf("format_version=2\nid=%s\ncreated_utc=2026-09-24T12:34:56Z\nreason=install\nsource_commit=%s\nopencode_captured=1\nclaude_captured=1\nagy_captured=1\nopencode_existed=1\nclaude_existed=0\nagy_existed=1\nopencode_skill_count=1\nclaude_skill_count=0\nagy_skill_count=2\n", testSnapshotID, strings.Repeat("a", 40)))
+	wantBytes := []byte(fmt.Sprintf("format_version=3\nid=%s\ncreated_utc=2026-09-24T12:34:56Z\nreason=install\nsource_commit=%s\nopencode_captured=1\nclaude_captured=1\nagy_captured=1\nagents_captured=1\nopencode_existed=1\nclaude_existed=0\nagy_existed=1\nagents_existed=1\nopencode_skill_count=1\nclaude_skill_count=0\nagy_skill_count=2\nagents_skill_count=1\n", testSnapshotID, strings.Repeat("a", 40)))
 	if !bytes.Equal(encoded, wantBytes) {
 		t.Fatalf("serialized metadata = %q, want %q", encoded, wantBytes)
 	}
 	got, err := ParseSnapshotMetadata(bytes.NewReader(encoded))
 	if err != nil {
-		t.Fatalf("ParseSnapshotMetadata(v2) error = %v", err)
+		t.Fatalf("ParseSnapshotMetadata(v3) error = %v", err)
 	}
 	if got != want {
 		t.Fatalf("round trip = %+v, want %+v", got, want)
@@ -74,7 +97,8 @@ func TestParseSnapshotMetadataRejectsInvalidContracts(t *testing.T) {
 		{name: "invalid timestamp shape", input: strings.Replace(string(base), "2026-09-24T12:34:56Z", "2026-09-24 12:34:56", 1), want: "invalid snapshot UTC date"},
 		{name: "invalid source commit", input: strings.Replace(string(base), strings.Repeat("a", 40), "abc", 1), want: "invalid snapshot source commit"},
 		{name: "v1 forbidden key", input: "format_version=1\nid=" + testSnapshotID + "\ncreated_utc=2026-09-24T12:34:56Z\nreason=install\nsource_commit=unknown\nopencode_existed=0\nclaude_existed=0\nopencode_skill_count=0\nclaude_skill_count=0\nagy_captured=0\n", want: "unsupported key"},
-		{name: "unsupported version", input: strings.Replace(string(base), "format_version=2", "format_version=3", 1), want: "unsupported"},
+		{name: "v2 forbidden key", input: "format_version=2\nid=" + testSnapshotID + "\ncreated_utc=2026-09-24T12:34:56Z\nreason=install\nsource_commit=unknown\nopencode_captured=1\nclaude_captured=1\nagy_captured=1\nopencode_existed=0\nclaude_existed=0\nagy_existed=0\nopencode_skill_count=0\nclaude_skill_count=0\nagy_skill_count=0\nagents_captured=1\n", want: "unsupported key"},
+		{name: "unsupported version", input: strings.Replace(string(base), "format_version=3", "format_version=4", 1), want: "unsupported"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -235,7 +259,7 @@ func TestParseSnapshotMetadataReadError(t *testing.T) {
 
 func TestSnapshotMetadataBashByteSchemaAndV1AbsentTrees(t *testing.T) {
 	metadata := SnapshotMetadata{
-		FormatVersion: 2,
+		FormatVersion: 3,
 		ID:            testSnapshotID,
 		CreatedUTC:    "2026-09-24T12:34:56Z",
 		Reason:        "install",
@@ -243,17 +267,18 @@ func TestSnapshotMetadataBashByteSchemaAndV1AbsentTrees(t *testing.T) {
 		OpenCode:      SnapshotTarget{Captured: true, Existed: true, SkillCount: 1},
 		Claude:        SnapshotTarget{Captured: true},
 		AGY:           SnapshotTarget{Captured: true},
+		Agents:        SnapshotTarget{Captured: true},
 	}
 	got, err := SerializeSnapshotMetadata(metadata)
 	if err != nil {
 		t.Fatalf("SerializeSnapshotMetadata() error = %v", err)
 	}
-	want := "format_version=2\n" +
+	want := "format_version=3\n" +
 		"id=" + testSnapshotID + "\n" +
 		"created_utc=2026-09-24T12:34:56Z\nreason=install\nsource_commit=" + stateCommit + "\n" +
-		"opencode_captured=1\nclaude_captured=1\nagy_captured=1\n" +
-		"opencode_existed=1\nclaude_existed=0\nagy_existed=0\n" +
-		"opencode_skill_count=1\nclaude_skill_count=0\nagy_skill_count=0\n"
+		"opencode_captured=1\nclaude_captured=1\nagy_captured=1\nagents_captured=1\n" +
+		"opencode_existed=1\nclaude_existed=0\nagy_existed=0\nagents_existed=0\n" +
+		"opencode_skill_count=1\nclaude_skill_count=0\nagy_skill_count=0\nagents_skill_count=0\n"
 	if string(got) != want {
 		t.Fatalf("serialized metadata bytes = %q, want Bash create_snapshot bytes %q", got, want)
 	}

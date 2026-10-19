@@ -1,14 +1,15 @@
-# Safely install `ai-skill-pack` in OpenCode, Claude, and AGY
+# Safely install `ai-skill-pack` in OpenCode, Claude, AGY, Pi, and Gentle Shell
 
 `install-skills.sh` installs the complete
 [`ChitoLabs/ai-skill-pack`](https://github.com/ChitoLabs/ai-skill-pack) skill
-tree into OpenCode, Claude, and AGY. It checks the source commit before an
+tree into OpenCode, Claude, AGY, Pi, and Gentle Shell (via the standard
+`~/.agents/skills` directory). It checks the source commit before an
 update, creates managed snapshots, and uses a transactional rollback if a
 replacement fails.
 
-> **Important:** `install` replaces **all three** skill directories in full.
+> **Important:** `install` replaces **all four** skill directories in full.
 > This includes Gentle AI skills where present. Reinstall Gentle AI after the
-> update if you use it, then restart OpenCode, Claude, and AGY.
+> update if you use it, then restart OpenCode, Claude, AGY, and Pi/Gentle Shell.
 
 ## Quick start
 
@@ -61,7 +62,7 @@ managed backups.
 | The remote commit is newer | Reports `installed -> remote` and a skill summary: `+new / ~modified / -removed`. |
 
 When an installed target is available, the summary compares the source skill
-tree with the first existing target in this order: OpenCode, Claude, then AGY.
+tree with the first existing target in this order: OpenCode, Claude, AGY, then Agents.
 Names are listed alphabetically, with a maximum of 20 names in each group. A
 fresh shallow clone is used when `status` needs source content for this
 comparison.
@@ -83,7 +84,7 @@ targets:
   snapshot.
 - If the same commit is installed but local content has drifted, it warns and
   reinstalls the canonical tree.
-- A newer commit creates an install snapshot and updates all three targets.
+- A newer commit creates an install snapshot and updates all four targets.
 - `install --force` explicitly reinstalls the same version and creates a new
   install snapshot even when no update is available.
 
@@ -109,8 +110,8 @@ source commit when that commit is recorded.
 | Command | Source access | Changes targets? | Changes backups? | Prompts? |
 |---|---|---:|---:|---:|
 | `./install-skills.sh dry-run` | Fresh shallow clone | No | No | No |
-| `./install-skills.sh install` | Fresh shallow clone | Replaces all three unless already up to date | Creates an install snapshot unless it is a no-op | No |
-| `./install-skills.sh install --force` | Fresh shallow clone | Replaces all three even when the version is unchanged | Creates an install snapshot | No |
+| `./install-skills.sh install` | Fresh shallow clone | Replaces all four unless already up to date | Creates an install snapshot unless it is a no-op | No |
+| `./install-skills.sh install --force` | Fresh shallow clone | Replaces all four even when the version is unchanged | Creates an install snapshot | No |
 | `./install-skills.sh status` or `check` | `git ls-remote`, plus a temporary clone when source content is needed | No | No | No |
 | `./install-skills.sh list` | Local snapshots | No | No | No |
 | `./install-skills.sh restore BACKUP_ID` | Local snapshot | Restores captured states | Creates a pre-restore snapshot | No |
@@ -142,7 +143,7 @@ skills. Temporary staging is removed when the command exits.
 ## Install behavior and safety
 
 After the same source checks as a dry run, `install` prepares identical copies
-for all three targets, snapshots their current states, and replaces the trees
+for all four targets, snapshots their current states, and replaces the trees
 as one transaction.
 
 | Safety property | Behavior |
@@ -158,7 +159,7 @@ as one transaction.
 By default, installation also creates `BKOld/`, `.install-skills.lock`, and
 `.installed-skills.state` beside the script. Missing target parent directories
 are created when replacements are prepared. The installer does not modify
-OpenCode commands, Engram, CodeGraph indexes, `~/.agents/skills`, or
+OpenCode commands, Engram, CodeGraph indexes, or
 `~/.gemini/antigravity-cli/skills`.
 
 ## Targets and automatic path resolution
@@ -171,10 +172,15 @@ it reports the resolved canonical path and the source used.
 | OpenCode | `OPENCODE_SKILLS_DIR` → `OPENCODE_CONFIG_DIR/skills` → `XDG_CONFIG_HOME/opencode/skills` | `~/.config/opencode/skills` |
 | Claude | `CLAUDE_SKILLS_DIR` → `CLAUDE_CONFIG_DIR/skills` | `~/.claude/skills` |
 | AGY | `AGY_SKILLS_DIR` | `~/.gemini/config/skills` |
+| Agents (Pi, Gentle Shell) | `AGENTS_SKILLS_DIR` | `~/.agents/skills` |
 
 > **AGY path:** The supported global target is `~/.gemini/config/skills`, based
 > on the verified AGY CLI v1.1.19 customization layout. The installer never
 > uses or modifies `~/.gemini/antigravity-cli/skills`.
+>
+> **Agents path (Pi and Gentle Shell):** The supported target is
+> `~/.agents/skills`, following the open Agent Skills specification natively
+> discovered by Pi and Gentle Shell without duplicating skill directories.
 
 Explicit target paths and configuration roots must resolve to safe absolute
 paths, and each final target must end in `/skills`. Empty variables fall through
@@ -191,7 +197,8 @@ BKOld/
     ├── metadata
     ├── opencode/   # only when the target existed
     ├── claude/     # only when the target existed
-    └── agy/        # only when the target existed
+    ├── agy/        # only when the target existed
+    └── agents/     # only when the target existed
 ```
 
 List and restore snapshots with:
@@ -203,12 +210,14 @@ List and restore snapshots with:
 
 `list` reports each snapshot's ID, UTC date, reason, represented targets, skill
 counts, and source commit when known. `restore` validates the selected snapshot,
-creates a new three-target `pre-restore` safety snapshot, and restores every
+creates a new four-target `pre-restore` safety snapshot, and restores every
 captured state transactionally. A target captured as absent becomes absent
 again; a target not captured by the selected snapshot remains unchanged.
 
-Legacy version 1 snapshots remain listable and restorable. They capture
-OpenCode and Claude only, so AGY remains unchanged during their restoration.
+Version 1 and version 2 snapshots remain listable and restorable:
+- **Version 1 snapshots** capture OpenCode and Claude only; AGY and Agents remain unchanged during their restoration.
+- **Version 2 snapshots** capture OpenCode, Claude, and AGY; Agents remains unchanged during their restoration.
+- **Version 3 snapshots** capture all four targets (OpenCode, Claude, AGY, and Agents).
 
 There is no separate `uninstall` command. To remove an installation and return
 to the exact earlier states, restore the snapshot created by that install. If
@@ -223,6 +232,7 @@ targets automatically.
 | `OPENCODE_SKILLS_DIR` | Exact OpenCode target | Must be an absolute path ending in `/skills` |
 | `CLAUDE_SKILLS_DIR` | Exact Claude target | Must be an absolute path ending in `/skills` |
 | `AGY_SKILLS_DIR` | Exact AGY target | Must be an absolute path ending in `/skills` |
+| `AGENTS_SKILLS_DIR` | Exact Agents target (Pi, Gentle Shell) | Must be an absolute path ending in `/skills` |
 | `OPENCODE_CONFIG_DIR` | OpenCode configuration root | Appends `/skills` |
 | `XDG_CONFIG_HOME` | XDG root for OpenCode | Appends `/opencode/skills` |
 | `CLAUDE_CONFIG_DIR` | Claude configuration root | Appends `/skills` |
@@ -303,6 +313,7 @@ For the default target paths, count installed manifests with:
 find "$HOME/.config/opencode/skills" -mindepth 2 -maxdepth 2 -type f -name SKILL.md | wc -l
 find "$HOME/.claude/skills" -mindepth 2 -maxdepth 2 -type f -name SKILL.md | wc -l
 find "$HOME/.gemini/config/skills" -mindepth 2 -maxdepth 2 -type f -name SKILL.md | wc -l
+find "$HOME/.agents/skills" -mindepth 2 -maxdepth 2 -type f -name SKILL.md | wc -l
 ```
 
 If path overrides were used, substitute the resolved paths printed by `dry-run`
@@ -360,7 +371,7 @@ and inode numbers for hardlink detection).
 |---|---|---:|---:|
 | `cskill status` | Compares the installed commit (from the state file, or the newest valid install snapshot as fallback) against the remote branch head; on a match with local drift, or on a newer remote commit, clones the source and prints a skill diff | No | No |
 | `cskill list` | Lists managed snapshots under the backup root: ID, UTC time, reason, per-target captured/existed state and skill counts, source commit | No | No |
-| `cskill install [--force]` | Clones the configured branch, validates the skill tree, and replaces the OpenCode, Claude, and AGY targets as one transaction | Yes, unless the install is skipped as already up to date | Creates an install snapshot unless the install is skipped |
+| `cskill install [--force]` | Clones the configured branch, validates the skill tree, and replaces the OpenCode, Claude, AGY, and Agents targets as one transaction | Yes, unless the install is skipped as already up to date | Creates an install snapshot unless the install is skipped |
 | `cskill restore BACKUP_ID` | Restores a validated snapshot by ID | Restores captured targets; leaves uncaptured targets unchanged | Creates a `pre-restore` safety snapshot |
 | `cskill help`, `cskill --help`, `cskill -h` | Prints usage and the command list | No | No |
 | `cskill` (no command) | Prints the `C-Skills` logo (animated on an interactive TTY, static otherwise) and exits `0` | No | No |
@@ -383,14 +394,14 @@ Like `install-skills.sh install`:
   new snapshot, no target change.
 - The same commit with drifted local targets is reinstalled with a warning,
   `--force` or not.
-- A newer commit always installs and updates all three targets.
+- A newer commit always installs and updates all four targets.
 - `install --force` reinstalls the same version even when nothing changed.
 
 ### Shared configuration and environment variables
 
 `cskill` resolves configuration with the same precedence and the same
 environment variables as `install-skills.sh`: `OPENCODE_SKILLS_DIR`,
-`CLAUDE_SKILLS_DIR`, `AGY_SKILLS_DIR`, `OPENCODE_CONFIG_DIR`,
+`CLAUDE_SKILLS_DIR`, `AGY_SKILLS_DIR`, `AGENTS_SKILLS_DIR`, `OPENCODE_CONFIG_DIR`,
 `XDG_CONFIG_HOME`, `CLAUDE_CONFIG_DIR`, `SKILL_BACKUP_DIR`,
 `SKILL_INSTALLER_LOCK_FILE`, `SKILL_INSTALLER_STATE_FILE`,
 `SKILL_PACK_REPOSITORY_URL`, `SKILL_PACK_BRANCH`, and
@@ -419,25 +430,28 @@ different files.
 `cskill` reads and writes the same on-disk formats as the Bash installer,
 without changing it:
 
-- **Snapshot metadata** — `cskill` parses both version 1 (implicit
-  OpenCode/Claude-only capture) and version 2 (explicit per-target
-  `captured`/`existed`/`skill_count`) metadata, with the same required and
-  forbidden keys, duplicate/unknown-key rejection, and captured/existed/count
-  consistency rules as the Bash installer. It writes only version 2 snapshots,
-  in the same key order as `create_snapshot`.
+- **Snapshot metadata** — `cskill` parses version 1 (implicit
+  OpenCode/Claude-only capture), version 2 (explicit OpenCode, Claude, AGY
+  capture), and version 3 (explicit OpenCode, Claude, AGY, Agents capture)
+  metadata, with the same required and forbidden keys, duplicate/unknown-key
+  rejection, and captured/existed/count consistency rules as the Bash
+  installer. It writes version 3 snapshots, in the same key order as
+  `create_snapshot`.
 - **Installed state** — `cskill` reads and writes `.installed-skills.state` in
   the same `key=value` format as the Bash installer (`repository_url`,
   `branch`, `source_commit`, `skill_count`, `installed_utc`), and falls back to
   the newest valid `reason=install` snapshot when the state file is missing or
   invalid.
 - **Cross-restore** — either installer can restore a snapshot the other
-  created, including absent-target and uncaptured-target semantics, and either
-  can read state the other wrote.
+  created, including absent-target and uncaptured-target semantics across all
+  three snapshot versions, and either can read state the other wrote.
 
 This is proven with isolated `go test` fixtures that create snapshots, state,
 and skill trees with one implementation and restore or read them with the
 other, never against real skill directories: see
-`TestBashRestoresGoCreatedV2Snapshot`, `TestGoRestoresBashGeneratedV2Snapshot`,
+`TestBashRestoresGoCreatedV3Snapshot`, `TestGoRestoresBashGeneratedV3Snapshot`,
+`TestGoRestoresBashGeneratedV2Snapshot`,
+`TestBashRestoresGoLegacyV2SnapshotLeavesAgentsUnchanged`,
 `TestGoRestoresBashLegacyV1CaptureSemantics` (`cmd/cskills/restore_test.go`),
 and `TestGoReadsBashWrittenInstalledState`,
 `TestBashStatusAcceptsGoWrittenInstalledState` (`cmd/cskills/state_interop_test.go`).
