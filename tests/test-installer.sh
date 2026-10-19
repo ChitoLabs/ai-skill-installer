@@ -7,7 +7,7 @@ readonly INSTALLER="$PROJECT_ROOT/install-skills.sh"
 TEST_ROOT=""
 
 unset OPENCODE_SKILLS_DIR OPENCODE_CONFIG_DIR XDG_CONFIG_HOME
-unset CLAUDE_SKILLS_DIR CLAUDE_CONFIG_DIR AGY_SKILLS_DIR
+unset CLAUDE_SKILLS_DIR CLAUDE_CONFIG_DIR AGY_SKILLS_DIR AGENTS_SKILLS_DIR
 
 fail() {
   printf 'FAIL: %s\n' "$*" >&2
@@ -58,6 +58,7 @@ run_installer() {
   local claude_target="$3"
   local backup_root="$4"
   local agy_target="${backup_root%/*}/agy/skills"
+  local agents_target="${backup_root%/*}/agents/skills"
   shift 4
 
   env \
@@ -71,6 +72,7 @@ run_installer() {
     OPENCODE_SKILLS_DIR="$opencode_target" \
     CLAUDE_SKILLS_DIR="$claude_target" \
     AGY_SKILLS_DIR="$agy_target" \
+    AGENTS_SKILLS_DIR="$agents_target" \
     SKILL_BACKUP_DIR="$backup_root" \
     SKILL_INSTALLER_LOCK_FILE="${backup_root%/*}/installer.lock" \
     SKILL_INSTALLER_STATE_FILE="${backup_root%/*}/installer.state" \
@@ -92,6 +94,7 @@ run_installer_with_tmpdir() {
   local backup_root="$5"
   local temporary_root="$6"
   local home="$7"
+  local agents_target="${backup_root%/*}/agents/skills"
   shift 7
 
   env \
@@ -106,6 +109,7 @@ run_installer_with_tmpdir() {
     OPENCODE_SKILLS_DIR="$opencode_target" \
     CLAUDE_SKILLS_DIR="$claude_target" \
     AGY_SKILLS_DIR="$agy_target" \
+    AGENTS_SKILLS_DIR="$agents_target" \
     SKILL_BACKUP_DIR="$backup_root" \
     SKILL_INSTALLER_LOCK_FILE="${backup_root%/*}/installer.lock" \
     SKILL_INSTALLER_STATE_FILE="${backup_root%/*}/installer.state" \
@@ -125,6 +129,7 @@ run_autodetect_dry_run() {
     -u CLAUDE_SKILLS_DIR \
     -u CLAUDE_CONFIG_DIR \
     -u AGY_SKILLS_DIR \
+    -u AGENTS_SKILLS_DIR \
     HOME="$home" \
     TMPDIR="$TEST_ROOT" \
     SKILL_PACK_REPOSITORY_URL="file://$repository" \
@@ -338,6 +343,7 @@ test_install_creates_bkold_snapshot_and_list_metadata() {
   local opencode_target="$fixture/opencode/skills"
   local claude_target="$fixture/claude/skills"
   local agy_target="$fixture/agy/skills"
+  local agents_target="$fixture/agents/skills"
   local backup_root="$fixture/BKOld"
   local output
   local list_output
@@ -348,6 +354,7 @@ test_install_creates_bkold_snapshot_and_list_metadata() {
   prepare_original_target "$opencode_target" "original-opencode"
   prepare_original_target "$claude_target" "original-claude"
   prepare_original_target "$agy_target" "original-agy"
+  prepare_original_target "$agents_target" "original-agents"
   source_commit="$(git -C "$repository" rev-parse HEAD)"
 
   if ! output="$(run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" install 2>&1)"; then
@@ -362,20 +369,25 @@ test_install_creates_bkold_snapshot_and_list_metadata() {
   assert_file "$backup_root/$snapshot_id/opencode/old-skill/nested/complete-tree.txt"
   assert_file "$backup_root/$snapshot_id/claude/stale-file.txt"
   assert_file "$backup_root/$snapshot_id/agy/stale-file.txt"
+  assert_file "$backup_root/$snapshot_id/agents/stale-file.txt"
+  assert_file "$backup_root/$snapshot_id/agents/old-skill/nested/complete-tree.txt"
   [[ "$snapshot_id" =~ ^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$ ]] || fail "Unsafe snapshot ID: $snapshot_id"
   [[ "$created_utc" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || \
     fail "Unexpected UTC timestamp: $created_utc"
   [[ "$(metadata_value "$backup_root/$snapshot_id/metadata" reason)" == "install" ]] || fail "Missing install reason"
-  [[ "$(metadata_value "$backup_root/$snapshot_id/metadata" format_version)" == "2" ]] || fail "New snapshot schema version is wrong"
+  [[ "$(metadata_value "$backup_root/$snapshot_id/metadata" format_version)" == "3" ]] || fail "New snapshot schema version is wrong"
   [[ "$(metadata_value "$backup_root/$snapshot_id/metadata" opencode_captured)" == "1" ]] || fail "OpenCode capture metadata is wrong"
   [[ "$(metadata_value "$backup_root/$snapshot_id/metadata" claude_captured)" == "1" ]] || fail "Claude capture metadata is wrong"
   [[ "$(metadata_value "$backup_root/$snapshot_id/metadata" agy_captured)" == "1" ]] || fail "AGY capture metadata is wrong"
+  [[ "$(metadata_value "$backup_root/$snapshot_id/metadata" agents_captured)" == "1" ]] || fail "Agents capture metadata is wrong"
   [[ "$(metadata_value "$backup_root/$snapshot_id/metadata" opencode_existed)" == "1" ]] || fail "OpenCode existence metadata is wrong"
   [[ "$(metadata_value "$backup_root/$snapshot_id/metadata" claude_existed)" == "1" ]] || fail "Claude existence metadata is wrong"
   [[ "$(metadata_value "$backup_root/$snapshot_id/metadata" opencode_skill_count)" == "1" ]] || fail "OpenCode skill count is wrong"
   [[ "$(metadata_value "$backup_root/$snapshot_id/metadata" claude_skill_count)" == "1" ]] || fail "Claude skill count is wrong"
   [[ "$(metadata_value "$backup_root/$snapshot_id/metadata" agy_existed)" == "1" ]] || fail "AGY existence metadata is wrong"
   [[ "$(metadata_value "$backup_root/$snapshot_id/metadata" agy_skill_count)" == "1" ]] || fail "AGY skill count is wrong"
+  [[ "$(metadata_value "$backup_root/$snapshot_id/metadata" agents_existed)" == "1" ]] || fail "Agents existence metadata is wrong"
+  [[ "$(metadata_value "$backup_root/$snapshot_id/metadata" agents_skill_count)" == "1" ]] || fail "Agents skill count is wrong"
   [[ "$(metadata_value "$backup_root/$snapshot_id/metadata" source_commit)" == "$source_commit" ]] || fail "Source commit metadata is wrong"
 
   assert_file "$opencode_target/alpha/SKILL.md"
@@ -384,14 +396,18 @@ test_install_creates_bkold_snapshot_and_list_metadata() {
   assert_file "$claude_target/beta/SKILL.md"
   assert_file "$agy_target/alpha/SKILL.md"
   assert_file "$agy_target/beta/SKILL.md"
+  assert_file "$agents_target/alpha/SKILL.md"
+  assert_file "$agents_target/beta/SKILL.md"
   assert_absent "$opencode_target/stale-file.txt"
   assert_absent "$claude_target/stale-file.txt"
   assert_absent "$agy_target/stale-file.txt"
+  assert_absent "$agents_target/stale-file.txt"
   assert_contains "$output" "Backup snapshot: $snapshot_id"
   assert_contains "$output" "Source commit: $source_commit"
   assert_contains "$output" "OpenCode target: $opencode_target (source: OPENCODE_SKILLS_DIR)"
   assert_contains "$output" "Claude target: $claude_target (source: CLAUDE_SKILLS_DIR)"
   assert_contains "$output" "AGY target: $agy_target (source: AGY_SKILLS_DIR)"
+  assert_contains "$output" "Agents target: $agents_target (source: AGENTS_SKILLS_DIR)"
 
   list_output="$(run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" list 2>&1)"
   assert_contains "$list_output" "$snapshot_id"
@@ -399,7 +415,8 @@ test_install_creates_bkold_snapshot_and_list_metadata() {
   assert_contains "$list_output" "install"
   assert_contains "$list_output" "yes"
   assert_contains "$list_output" "AGY yes"
-  assert_contains "$list_output" "1/1/1"
+  assert_contains "$list_output" "Agents yes"
+  assert_contains "$list_output" "1/1/1/1"
   assert_contains "$list_output" "$source_commit"
 }
 
@@ -409,6 +426,7 @@ test_successful_restore_and_pre_restore_snapshot() {
   local opencode_target="$fixture/opencode/skills"
   local claude_target="$fixture/claude/skills"
   local agy_target="$fixture/agy/skills"
+  local agents_target="$fixture/agents/skills"
   local backup_root="$fixture/BKOld"
   local selected_id
   local safety_id
@@ -417,24 +435,29 @@ test_successful_restore_and_pre_restore_snapshot() {
   prepare_original_target "$opencode_target" "original-opencode"
   prepare_original_target "$claude_target" "original-claude"
   prepare_original_target "$agy_target" "original-agy"
+  prepare_original_target "$agents_target" "original-agents"
   run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" install >/dev/null
   selected_id="$(only_snapshot_id "$backup_root")"
 
   printf 'current-opencode\n' >"$opencode_target/current-file.txt"
   printf 'current-claude\n' >"$claude_target/current-file.txt"
   printf 'current-agy\n' >"$agy_target/current-file.txt"
+  printf 'current-agents\n' >"$agents_target/current-file.txt"
   output="$(run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" restore "$selected_id" 2>&1)"
 
   assert_file "$opencode_target/old-skill/SKILL.md"
   assert_file "$opencode_target/old-skill/nested/complete-tree.txt"
   assert_file "$claude_target/old-skill/SKILL.md"
   assert_file "$agy_target/old-skill/SKILL.md"
+  assert_file "$agents_target/old-skill/SKILL.md"
   assert_absent "$opencode_target/alpha"
   assert_absent "$claude_target/alpha"
   assert_absent "$agy_target/alpha"
+  assert_absent "$agents_target/alpha"
   assert_absent "$opencode_target/current-file.txt"
   assert_absent "$claude_target/current-file.txt"
   assert_absent "$agy_target/current-file.txt"
+  assert_absent "$agents_target/current-file.txt"
   assert_snapshot_count "$backup_root" 2
   safety_id="$(find_snapshot_by_reason "$backup_root" "pre-restore")"
   [[ "$safety_id" != "$selected_id" ]] || fail "Restore safety snapshot reused the selected snapshot"
@@ -443,6 +466,8 @@ test_successful_restore_and_pre_restore_snapshot() {
   assert_file "$backup_root/$safety_id/claude/current-file.txt"
   assert_file "$backup_root/$safety_id/agy/alpha/SKILL.md"
   assert_file "$backup_root/$safety_id/agy/current-file.txt"
+  assert_file "$backup_root/$safety_id/agents/alpha/SKILL.md"
+  assert_file "$backup_root/$safety_id/agents/current-file.txt"
   assert_contains "$output" "Restored snapshot: $selected_id"
   assert_contains "$output" "Pre-restore safety snapshot: $safety_id"
 }
@@ -453,16 +478,19 @@ test_restore_recreates_absent_target_state() {
   local opencode_target="$fixture/opencode/skills"
   local claude_target="$fixture/claude/skills"
   local agy_target="$fixture/agy/skills"
+  local agents_target="$fixture/agents/skills"
   local backup_root="$fixture/BKOld"
   local selected_id
 
   prepare_original_target "$opencode_target" "original-opencode"
   assert_absent "$claude_target"
   assert_absent "$agy_target"
+  assert_absent "$agents_target"
   run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" install >/dev/null
   selected_id="$(only_snapshot_id "$backup_root")"
   [[ "$(metadata_value "$backup_root/$selected_id/metadata" claude_existed)" == "0" ]] || fail "Absent Claude target was not recorded"
   [[ "$(metadata_value "$backup_root/$selected_id/metadata" agy_existed)" == "0" ]] || fail "Absent AGY target was not recorded"
+  [[ "$(metadata_value "$backup_root/$selected_id/metadata" agents_existed)" == "0" ]] || fail "Absent Agents target was not recorded"
 
   run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" restore "$selected_id" >/dev/null
 
@@ -470,6 +498,7 @@ test_restore_recreates_absent_target_state() {
   assert_absent "$opencode_target/alpha"
   assert_absent "$claude_target"
   assert_absent "$agy_target"
+  assert_absent "$agents_target"
   assert_snapshot_count "$backup_root" 2
 }
 
@@ -1139,13 +1168,17 @@ test_rejects_malformed_metadata_without_mutation() {
 test_v1_rejects_v2_keys_even_when_empty() {
   local repository="$1"
   local forbidden_key
-  local -a forbidden_keys=(opencode_captured claude_captured agy_captured agy_existed agy_skill_count)
+  local -a forbidden_keys=(
+    opencode_captured claude_captured agy_captured agy_existed agy_skill_count
+    agents_captured agents_existed agents_skill_count
+  )
 
   for forbidden_key in "${forbidden_keys[@]}"; do
     local fixture="$TEST_ROOT/v1-empty-$forbidden_key"
     local opencode_target="$fixture/opencode/skills"
     local claude_target="$fixture/claude/skills"
     local agy_target="$fixture/agy/skills"
+    local agents_target="$fixture/agents/skills"
     local backup_root="$fixture/BKOld"
     local legacy_opencode="$fixture/legacy-opencode"
     local legacy_claude="$fixture/legacy-claude"
@@ -1159,6 +1192,7 @@ test_v1_rejects_v2_keys_even_when_empty() {
     prepare_original_target "$opencode_target" "current-opencode"
     prepare_original_target "$claude_target" "current-claude"
     prepare_original_target "$agy_target" "current-agy"
+    prepare_original_target "$agents_target" "current-agents"
 
     if output="$(run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" restore "$snapshot_id" 2>&1)"; then
       fail "Version 1 snapshot containing empty $forbidden_key unexpectedly restored"
@@ -1168,6 +1202,7 @@ test_v1_rejects_v2_keys_even_when_empty() {
     [[ "$(<"$opencode_target/stale-file.txt")" == "current-opencode" ]] || fail "Rejected version 1 metadata changed OpenCode"
     [[ "$(<"$claude_target/stale-file.txt")" == "current-claude" ]] || fail "Rejected version 1 metadata changed Claude"
     [[ "$(<"$agy_target/stale-file.txt")" == "current-agy" ]] || fail "Rejected version 1 metadata changed AGY"
+    [[ "$(<"$agents_target/stale-file.txt")" == "current-agents" ]] || fail "Rejected version 1 metadata changed Agents"
     assert_snapshot_count "$backup_root" 1
   done
 }
@@ -1187,14 +1222,21 @@ test_v2_requires_every_mandatory_target_key() {
   prepare_original_target "$base_fixture/opencode/skills" "original-opencode"
   prepare_original_target "$base_fixture/claude/skills" "original-claude"
   prepare_original_target "$base_fixture/agy/skills" "original-agy"
+  prepare_original_target "$base_fixture/agents/skills" "original-agents"
   run_installer "$repository" "$base_fixture/opencode/skills" "$base_fixture/claude/skills" "$base_backup_root" install >/dev/null
   base_snapshot_id="$(only_snapshot_id "$base_backup_root")"
+  set_metadata_value "$base_backup_root/$base_snapshot_id/metadata" "format_version" "2"
+  remove_metadata_key "$base_backup_root/$base_snapshot_id/metadata" "agents_captured"
+  remove_metadata_key "$base_backup_root/$base_snapshot_id/metadata" "agents_existed"
+  remove_metadata_key "$base_backup_root/$base_snapshot_id/metadata" "agents_skill_count"
+  rm -rf -- "$base_backup_root/$base_snapshot_id/agents"
 
   for required_key in "${required_keys[@]}"; do
     local fixture="$TEST_ROOT/v2-missing-$required_key"
     local opencode_target="$fixture/opencode/skills"
     local claude_target="$fixture/claude/skills"
     local agy_target="$fixture/agy/skills"
+    local agents_target="$fixture/agents/skills"
     local backup_root="$fixture/BKOld"
     local output
 
@@ -1204,6 +1246,7 @@ test_v2_requires_every_mandatory_target_key() {
     prepare_original_target "$opencode_target" "current-opencode"
     prepare_original_target "$claude_target" "current-claude"
     prepare_original_target "$agy_target" "current-agy"
+    prepare_original_target "$agents_target" "current-agents"
 
     if output="$(run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" restore "$base_snapshot_id" 2>&1)"; then
       fail "Version 2 snapshot missing $required_key unexpectedly restored"
@@ -1213,6 +1256,107 @@ test_v2_requires_every_mandatory_target_key() {
     assert_file "$opencode_target/stale-file.txt"
     assert_file "$claude_target/stale-file.txt"
     assert_file "$agy_target/stale-file.txt"
+    assert_file "$agents_target/stale-file.txt"
+    assert_snapshot_count "$backup_root" 1
+  done
+}
+
+test_v2_rejects_v3_keys_even_when_empty() {
+  local repository="$1"
+  local forbidden_key
+  local -a forbidden_keys=(agents_captured agents_existed agents_skill_count)
+  local base_fixture="$TEST_ROOT/v2-forbidden-base"
+  local base_backup_root="$base_fixture/BKOld"
+  local base_snapshot_id
+
+  prepare_original_target "$base_fixture/opencode/skills" "original-opencode"
+  prepare_original_target "$base_fixture/claude/skills" "original-claude"
+  prepare_original_target "$base_fixture/agy/skills" "original-agy"
+  prepare_original_target "$base_fixture/agents/skills" "original-agents"
+  run_installer "$repository" "$base_fixture/opencode/skills" "$base_fixture/claude/skills" "$base_backup_root" install >/dev/null
+  base_snapshot_id="$(only_snapshot_id "$base_backup_root")"
+  set_metadata_value "$base_backup_root/$base_snapshot_id/metadata" "format_version" "2"
+  remove_metadata_key "$base_backup_root/$base_snapshot_id/metadata" "agents_captured"
+  remove_metadata_key "$base_backup_root/$base_snapshot_id/metadata" "agents_existed"
+  remove_metadata_key "$base_backup_root/$base_snapshot_id/metadata" "agents_skill_count"
+  rm -rf -- "$base_backup_root/$base_snapshot_id/agents"
+
+  for forbidden_key in "${forbidden_keys[@]}"; do
+    local fixture="$TEST_ROOT/v2-empty-$forbidden_key"
+    local opencode_target="$fixture/opencode/skills"
+    local claude_target="$fixture/claude/skills"
+    local agy_target="$fixture/agy/skills"
+    local agents_target="$fixture/agents/skills"
+    local backup_root="$fixture/BKOld"
+    local output
+
+    mkdir -p -- "$fixture"
+    cp -a -- "$base_backup_root" "$backup_root"
+    printf '%s=\n' "$forbidden_key" >>"$backup_root/$base_snapshot_id/metadata"
+    prepare_original_target "$opencode_target" "current-opencode"
+    prepare_original_target "$claude_target" "current-claude"
+    prepare_original_target "$agy_target" "current-agy"
+    prepare_original_target "$agents_target" "current-agents"
+
+    if output="$(run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" restore "$base_snapshot_id" 2>&1)"; then
+      fail "Version 2 snapshot containing empty $forbidden_key unexpectedly restored"
+    fi
+
+    assert_contains "$output" "Version 2 snapshot contains unsupported key '$forbidden_key'"
+    assert_file "$opencode_target/stale-file.txt"
+    assert_file "$claude_target/stale-file.txt"
+    assert_file "$agy_target/stale-file.txt"
+    assert_file "$agents_target/stale-file.txt"
+    assert_snapshot_count "$backup_root" 1
+  done
+}
+
+test_v3_requires_every_mandatory_target_key() {
+  local repository="$1"
+  local base_fixture="$TEST_ROOT/v3-missing-base"
+  local base_backup_root="$base_fixture/BKOld"
+  local base_snapshot_id
+  local required_key
+  local -a required_keys=(
+    opencode_captured opencode_existed opencode_skill_count
+    claude_captured claude_existed claude_skill_count
+    agy_captured agy_existed agy_skill_count
+    agents_captured agents_existed agents_skill_count
+  )
+
+  prepare_original_target "$base_fixture/opencode/skills" "original-opencode"
+  prepare_original_target "$base_fixture/claude/skills" "original-claude"
+  prepare_original_target "$base_fixture/agy/skills" "original-agy"
+  prepare_original_target "$base_fixture/agents/skills" "original-agents"
+  run_installer "$repository" "$base_fixture/opencode/skills" "$base_fixture/claude/skills" "$base_backup_root" install >/dev/null
+  base_snapshot_id="$(only_snapshot_id "$base_backup_root")"
+
+  for required_key in "${required_keys[@]}"; do
+    local fixture="$TEST_ROOT/v3-missing-$required_key"
+    local opencode_target="$fixture/opencode/skills"
+    local claude_target="$fixture/claude/skills"
+    local agy_target="$fixture/agy/skills"
+    local agents_target="$fixture/agents/skills"
+    local backup_root="$fixture/BKOld"
+    local output
+
+    mkdir -p -- "$fixture"
+    cp -a -- "$base_backup_root" "$backup_root"
+    remove_metadata_key "$backup_root/$base_snapshot_id/metadata" "$required_key"
+    prepare_original_target "$opencode_target" "current-opencode"
+    prepare_original_target "$claude_target" "current-claude"
+    prepare_original_target "$agy_target" "current-agy"
+    prepare_original_target "$agents_target" "current-agents"
+
+    if output="$(run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" restore "$base_snapshot_id" 2>&1)"; then
+      fail "Version 3 snapshot missing $required_key unexpectedly restored"
+    fi
+
+    assert_contains "$output" "Missing required metadata key '$required_key' for version 3"
+    assert_file "$opencode_target/stale-file.txt"
+    assert_file "$claude_target/stale-file.txt"
+    assert_file "$agy_target/stale-file.txt"
+    assert_file "$agents_target/stale-file.txt"
     assert_snapshot_count "$backup_root" 1
   done
 }
@@ -1230,11 +1374,14 @@ test_rejects_inconsistent_metadata_for_every_target() {
     'Claude|claude_existed|0|claude_skill_count|999'
     'AGY|agy_captured|0|agy_existed|1'
     'AGY|agy_existed|0|agy_skill_count|999'
+    'Agents|agents_captured|0|agents_existed|1'
+    'Agents|agents_existed|0|agents_skill_count|999'
   )
 
   prepare_original_target "$base_fixture/opencode/skills" "original-opencode"
   prepare_original_target "$base_fixture/claude/skills" "original-claude"
   prepare_original_target "$base_fixture/agy/skills" "original-agy"
+  prepare_original_target "$base_fixture/agents/skills" "original-agents"
   run_installer "$repository" "$base_fixture/opencode/skills" "$base_fixture/claude/skills" "$base_backup_root" install >/dev/null
   base_snapshot_id="$(only_snapshot_id "$base_backup_root")"
 
@@ -1248,6 +1395,7 @@ test_rejects_inconsistent_metadata_for_every_target() {
     local opencode_target
     local claude_target
     local agy_target
+    local agents_target
     local backup_root
     local output
 
@@ -1256,6 +1404,7 @@ test_rejects_inconsistent_metadata_for_every_target() {
     opencode_target="$fixture/opencode/skills"
     claude_target="$fixture/claude/skills"
     agy_target="$fixture/agy/skills"
+    agents_target="$fixture/agents/skills"
     backup_root="$fixture/BKOld"
     mkdir -p -- "$fixture"
     cp -a -- "$base_backup_root" "$backup_root"
@@ -1264,6 +1413,7 @@ test_rejects_inconsistent_metadata_for_every_target() {
     prepare_original_target "$opencode_target" "current-opencode"
     prepare_original_target "$claude_target" "current-claude"
     prepare_original_target "$agy_target" "current-agy"
+    prepare_original_target "$agents_target" "current-agents"
 
     if output="$(run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" restore "$base_snapshot_id" 2>&1)"; then
       fail "Inconsistent $label metadata unexpectedly restored"
@@ -1273,6 +1423,7 @@ test_rejects_inconsistent_metadata_for_every_target() {
     assert_file "$opencode_target/stale-file.txt"
     assert_file "$claude_target/stale-file.txt"
     assert_file "$agy_target/stale-file.txt"
+    assert_file "$agents_target/stale-file.txt"
   done
 }
 
@@ -1284,6 +1435,7 @@ test_v2_consistent_uncaptured_targets_remain_unchanged() {
   local opencode_target="$fixture/opencode/skills"
   local claude_target="$fixture/claude/skills"
   local agy_target="$fixture/agy/skills"
+  local agents_target="$fixture/agents/skills"
   local backup_root="$fixture/BKOld"
   local snapshot_id
   local target_name
@@ -1292,12 +1444,13 @@ test_v2_consistent_uncaptured_targets_remain_unchanged() {
   prepare_original_target "$source_fixture/opencode/skills" "snapshot-opencode"
   prepare_original_target "$source_fixture/claude/skills" "snapshot-claude"
   prepare_original_target "$source_fixture/agy/skills" "snapshot-agy"
+  prepare_original_target "$source_fixture/agents/skills" "snapshot-agents"
   run_installer "$repository" "$source_fixture/opencode/skills" "$source_fixture/claude/skills" "$source_backup_root" install >/dev/null
   snapshot_id="$(only_snapshot_id "$source_backup_root")"
   mkdir -p -- "$fixture"
   cp -a -- "$source_backup_root" "$backup_root"
 
-  for target_name in opencode claude agy; do
+  for target_name in opencode claude agy agents; do
     set_metadata_value "$backup_root/$snapshot_id/metadata" "${target_name}_captured" 0
     set_metadata_value "$backup_root/$snapshot_id/metadata" "${target_name}_existed" 0
     set_metadata_value "$backup_root/$snapshot_id/metadata" "${target_name}_skill_count" 0
@@ -1307,19 +1460,22 @@ test_v2_consistent_uncaptured_targets_remain_unchanged() {
   prepare_original_target "$opencode_target" "current-opencode"
   prepare_original_target "$claude_target" "current-claude"
   prepare_original_target "$agy_target" "current-agy"
+  prepare_original_target "$agents_target" "current-agents"
   if ! list_output="$(run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" list 2>&1)"; then
     fail "Consistent version 2 uncaptured target metadata was rejected: $list_output"
   fi
   assert_contains "$list_output" "OpenCode not captured"
   assert_contains "$list_output" "Claude not captured"
   assert_contains "$list_output" "AGY not captured"
-  assert_contains "$list_output" "n/a/n/a/n/a"
+  assert_contains "$list_output" "Agents not captured"
+  assert_contains "$list_output" "n/a/n/a/n/a/n/a"
 
   run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" restore "$snapshot_id" >/dev/null
 
   [[ "$(<"$opencode_target/stale-file.txt")" == "current-opencode" ]] || fail "Uncaptured OpenCode target changed"
   [[ "$(<"$claude_target/stale-file.txt")" == "current-claude" ]] || fail "Uncaptured Claude target changed"
   [[ "$(<"$agy_target/stale-file.txt")" == "current-agy" ]] || fail "Uncaptured AGY target changed"
+  [[ "$(<"$agents_target/stale-file.txt")" == "current-agents" ]] || fail "Uncaptured Agents target changed"
   assert_snapshot_count "$backup_root" 2
 }
 
@@ -1519,12 +1675,119 @@ test_restore_rollback_after_agy_boundary() {
   assert_contains "$output" "Rollback completed. All original targets were restored."
 }
 
+test_rejects_agents_target_overlap() {
+  local repository="$1"
+  local fixture="$TEST_ROOT/agents-overlap"
+  local opencode_target="$fixture/opencode/skills"
+  local claude_target="$fixture/claude/skills"
+  local backup_root="$fixture/BKOld"
+  local output
+
+  prepare_original_target "$opencode_target" "original-opencode"
+  prepare_original_target "$claude_target" "original-claude"
+
+  if output="$(env \
+    SKILL_PACK_REPOSITORY_URL="file://$repository" \
+    SKILL_PACK_BRANCH="main" \
+    SKILL_PACK_MIN_SKILL_COUNT="2" \
+    OPENCODE_SKILLS_DIR="$opencode_target" \
+    CLAUDE_SKILLS_DIR="$claude_target" \
+    AGENTS_SKILLS_DIR="$opencode_target" \
+    SKILL_BACKUP_DIR="$backup_root" \
+    SKILL_INSTALLER_LOCK_FILE="$fixture/installer.lock" \
+    SKILL_INSTALLER_STATE_FILE="$fixture/installer.state" \
+    "$INSTALLER" install 2>&1)"; then
+    fail "Overlapping Agents and OpenCode targets unexpectedly accepted"
+  fi
+
+  assert_contains "$output" "distinct and non-overlapping"
+  assert_file "$opencode_target/stale-file.txt"
+  assert_file "$claude_target/stale-file.txt"
+  assert_absent "$backup_root"
+}
+
+test_install_rollback_after_agents_boundary() {
+  local repository="$1"
+  local fixture="$TEST_ROOT/install-agents-rollback"
+  local opencode_target="$fixture/opencode/skills"
+  local claude_target="$fixture/claude/skills"
+  local agy_target="$fixture/agy/skills"
+  local agents_target="$fixture/agents/skills"
+  local backup_root="$fixture/BKOld"
+  local snapshot_id
+  local output
+
+  prepare_original_target "$opencode_target" "original-opencode"
+  prepare_original_target "$claude_target" "original-claude"
+  prepare_original_target "$agy_target" "original-agy"
+  prepare_original_target "$agents_target" "original-agents"
+
+  if output="$(run_installer_with_failpoint "after-agents-install" \
+    "$repository" "$opencode_target" "$claude_target" "$backup_root" install 2>&1)"; then
+    fail "Injected failure after Agents installation unexpectedly succeeded"
+  fi
+
+  assert_file "$opencode_target/stale-file.txt"
+  assert_file "$claude_target/stale-file.txt"
+  assert_file "$agy_target/stale-file.txt"
+  assert_file "$agents_target/stale-file.txt"
+  assert_absent "$opencode_target/alpha"
+  assert_absent "$claude_target/alpha"
+  assert_absent "$agy_target/alpha"
+  assert_absent "$agents_target/alpha"
+  snapshot_id="$(only_snapshot_id "$backup_root")"
+  assert_file "$backup_root/$snapshot_id/agents/stale-file.txt"
+  assert_contains "$output" "Rollback completed. All original targets were restored."
+}
+
+test_restore_rollback_after_agents_boundary() {
+  local repository="$1"
+  local fixture="$TEST_ROOT/restore-agents-rollback"
+  local opencode_target="$fixture/opencode/skills"
+  local claude_target="$fixture/claude/skills"
+  local agy_target="$fixture/agy/skills"
+  local agents_target="$fixture/agents/skills"
+  local backup_root="$fixture/BKOld"
+  local selected_id
+  local safety_id
+  local output
+
+  prepare_original_target "$opencode_target" "original-opencode"
+  prepare_original_target "$claude_target" "original-claude"
+  prepare_original_target "$agy_target" "original-agy"
+  prepare_original_target "$agents_target" "original-agents"
+  run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" install >/dev/null
+  selected_id="$(only_snapshot_id "$backup_root")"
+  printf 'keep-opencode\n' >"$opencode_target/current-file.txt"
+  printf 'keep-claude\n' >"$claude_target/current-file.txt"
+  printf 'keep-agy\n' >"$agy_target/current-file.txt"
+  printf 'keep-agents\n' >"$agents_target/current-file.txt"
+
+  if output="$(run_installer_with_failpoint "after-agents-restore" \
+    "$repository" "$opencode_target" "$claude_target" "$backup_root" restore "$selected_id" 2>&1)"; then
+    fail "Injected failure after Agents restoration unexpectedly succeeded"
+  fi
+
+  assert_file "$opencode_target/alpha/SKILL.md"
+  assert_file "$claude_target/alpha/SKILL.md"
+  assert_file "$agy_target/alpha/SKILL.md"
+  assert_file "$agents_target/alpha/SKILL.md"
+  assert_file "$opencode_target/current-file.txt"
+  assert_file "$claude_target/current-file.txt"
+  assert_file "$agy_target/current-file.txt"
+  assert_file "$agents_target/current-file.txt"
+  safety_id="$(find_snapshot_by_reason "$backup_root" "pre-restore")"
+  assert_file "$backup_root/$safety_id/agents/current-file.txt"
+  assert_contains "$output" "Rollback completed. All original targets were restored."
+}
+
 test_legacy_snapshot_leaves_agy_not_captured() {
   local repository="$1"
   local fixture="$TEST_ROOT/legacy-snapshot"
   local opencode_target="$fixture/opencode/skills"
   local claude_target="$fixture/claude/skills"
   local agy_target="$fixture/agy/skills"
+  local agents_target="$fixture/agents/skills"
   local backup_root="$fixture/BKOld"
   local legacy_opencode="$fixture/legacy-opencode"
   local legacy_claude="$fixture/legacy-claude"
@@ -1538,11 +1801,14 @@ test_legacy_snapshot_leaves_agy_not_captured() {
   prepare_original_target "$opencode_target" "current-opencode"
   prepare_original_target "$claude_target" "current-claude"
   prepare_original_target "$agy_target" "current-agy"
+  prepare_original_target "$agents_target" "current-agents"
   printf 'agy-must-remain\n' >"$agy_target/unchanged.txt"
+  printf 'agents-must-remain\n' >"$agents_target/unchanged.txt"
 
   list_output="$(run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" list 2>&1)"
   assert_contains "$list_output" "AGY not captured"
-  assert_contains "$list_output" "1/1/n/a"
+  assert_contains "$list_output" "Agents not captured"
+  assert_contains "$list_output" "1/1/n/a/n/a"
   run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" restore "$selected_id" >/dev/null
 
   assert_file "$opencode_target/old-skill/SKILL.md"
@@ -1550,10 +1816,58 @@ test_legacy_snapshot_leaves_agy_not_captured() {
   [[ "$(<"$opencode_target/stale-file.txt")" == "legacy-opencode" ]] || fail "Legacy OpenCode state was not restored"
   [[ "$(<"$claude_target/stale-file.txt")" == "legacy-claude" ]] || fail "Legacy Claude state was not restored"
   [[ "$(<"$agy_target/stale-file.txt")" == "current-agy" ]] || fail "Legacy restore changed current AGY state"
+  [[ "$(<"$agents_target/stale-file.txt")" == "current-agents" ]] || fail "Legacy restore changed current Agents state"
   assert_file "$agy_target/unchanged.txt"
+  assert_file "$agents_target/unchanged.txt"
   safety_id="$(find_snapshot_by_reason "$backup_root" "pre-restore")"
   [[ "$(metadata_value "$backup_root/$safety_id/metadata" agy_existed)" == "1" ]] || fail "Pre-restore snapshot did not capture AGY"
+  [[ "$(metadata_value "$backup_root/$safety_id/metadata" agents_existed)" == "1" ]] || fail "Pre-restore snapshot did not capture Agents"
   assert_file "$backup_root/$safety_id/agy/unchanged.txt"
+  assert_file "$backup_root/$safety_id/agents/unchanged.txt"
+}
+
+test_v2_snapshot_leaves_agents_not_captured() {
+  local repository="$1"
+  local fixture="$TEST_ROOT/v2-snapshot"
+  local opencode_target="$fixture/opencode/skills"
+  local claude_target="$fixture/claude/skills"
+  local agy_target="$fixture/agy/skills"
+  local agents_target="$fixture/agents/skills"
+  local backup_root="$fixture/BKOld"
+  local selected_id
+  local safety_id
+  local list_output
+
+  prepare_original_target "$opencode_target" "original-opencode"
+  prepare_original_target "$claude_target" "original-claude"
+  prepare_original_target "$agy_target" "original-agy"
+  prepare_original_target "$agents_target" "original-agents"
+  run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" install >/dev/null
+  selected_id="$(only_snapshot_id "$backup_root")"
+  set_metadata_value "$backup_root/$selected_id/metadata" "format_version" "2"
+  remove_metadata_key "$backup_root/$selected_id/metadata" "agents_captured"
+  remove_metadata_key "$backup_root/$selected_id/metadata" "agents_existed"
+  remove_metadata_key "$backup_root/$selected_id/metadata" "agents_skill_count"
+  rm -rf -- "$backup_root/$selected_id/agents"
+
+  printf 'current-opencode\n' >"$opencode_target/current-file.txt"
+  printf 'current-claude\n' >"$claude_target/current-file.txt"
+  printf 'current-agy\n' >"$agy_target/current-file.txt"
+  printf 'agents-must-remain\n' >"$agents_target/unchanged.txt"
+
+  list_output="$(run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" list 2>&1)"
+  assert_contains "$list_output" "Agents not captured"
+  assert_contains "$list_output" "1/1/1/n/a"
+
+  run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" restore "$selected_id" >/dev/null
+
+  assert_file "$opencode_target/old-skill/SKILL.md"
+  assert_file "$claude_target/old-skill/SKILL.md"
+  assert_file "$agy_target/old-skill/SKILL.md"
+  assert_file "$agents_target/unchanged.txt"
+  safety_id="$(find_snapshot_by_reason "$backup_root" "pre-restore")"
+  [[ "$(metadata_value "$backup_root/$safety_id/metadata" agents_existed)" == "1" ]] || fail "Pre-restore snapshot did not capture Agents"
+  assert_file "$backup_root/$safety_id/agents/unchanged.txt"
 }
 
 test_runtime_targets_prefer_explicit_overrides() {
@@ -1891,15 +2205,21 @@ main() {
     test_rejects_malformed_metadata_without_mutation
     test_v1_rejects_v2_keys_even_when_empty
     test_v2_requires_every_mandatory_target_key
+    test_v2_rejects_v3_keys_even_when_empty
+    test_v3_requires_every_mandatory_target_key
     test_rejects_inconsistent_metadata_for_every_target
     test_v2_consistent_uncaptured_targets_remain_unchanged
     test_rejects_symlink_backup_root_and_snapshot
     test_lists_backups_in_sortable_id_order
     test_uses_agy_global_path_and_protects_antigravity_cli
     test_rejects_agy_target_overlap
+    test_rejects_agents_target_overlap
     test_install_rollback_after_agy_boundary
+    test_install_rollback_after_agents_boundary
     test_restore_rollback_after_agy_boundary
+    test_restore_rollback_after_agents_boundary
     test_legacy_snapshot_leaves_agy_not_captured
+    test_v2_snapshot_leaves_agents_not_captured
     test_runtime_targets_prefer_explicit_overrides
     test_runtime_targets_prefer_opencode_config_before_xdg
     test_runtime_targets_use_xdg_opencode_path
