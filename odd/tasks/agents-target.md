@@ -20,7 +20,7 @@ Add `~/.agents/skills` as the 4th target (`Agents`) to both the Bash installer (
 - [x] **AGT-001**: Bash installer 4th target `agents` and snapshot v3 format (`install-skills.sh` + `tests/test-installer.sh`) [S1, S2, S3, S4, S5, S6, S7] (Route: inline, Commit: ee2ed53)
 - [x] **AGT-002**: Go installer `cskill` 4th target `Agents` and snapshot v3 parity (`cmd/cskills/` + tests) [S1, S2, S3, S4, S5, S6, S7] (Route: inline, Commit: 93a30d3)
 - [x] **AGT-003**: Cross-restore v1/v2/v3 interoperability tests between Bash and Go [S4, S5] (Route: inline, Commit: 8427e93)
-- [ ] **AGT-004**: Documentation and verification (`README.md`, CI run) [S8] (Route: inline, Commit: pending)
+- [x] **AGT-004**: Documentation and verification (`README.md`, CI run) [S8] (Route: inline, Commit: 1fc78d3)
 
 ## Log
 
@@ -30,3 +30,4 @@ Add `~/.agents/skills` as the 4th target (`Agents`) to both the Bash installer (
 - **L4 (2026-10-19):** Completed AGT-001 in commit ee2ed53: Added 4th target `agents` (`~/.agents/skills`), snapshot format version 3 with v1/v2/v3 compatibility, 4-target transaction engine and rollback in `install-skills.sh`. Extended `tests/test-installer.sh` to 58/58 passing cases.
 - **L5 (2026-10-19):** Completed AGT-002 in commit 93a30d3: Implemented 4th target `AgentsTarget`, snapshot format version 3, v1/v2/v3 parser/serializer, 4-target transaction engine and restore in `cmd/cskills/`. Passed all Go tests, `gofmt -l cmd`, and `go vet ./...`.
 - **L6 (2026-10-19):** Completed AGT-003 in commit 8427e93: Added full bidirectional v1/v2/v3 cross-restore tests between Go and Bash, proving both engines restore v3 snapshots across all 4 targets and preserve uncaptured targets during v1/v2 restores.
+- **L7 (2026-10-19):** Completed AGT-004 in commit 1fc78d3: Documented Pi and Gentle Shell 4th target (`~/.agents/skills`), `AGENTS_SKILLS_DIR` override, snapshot format version 3, and v1/v2/v3 cross-compatibility in `README.md`. Verified full test suite with `gofmt`, `go vet`, `go test -count=1 ./...`, and `tests/test-installer.sh` (58/58 cases). All 4 tasks completed.
