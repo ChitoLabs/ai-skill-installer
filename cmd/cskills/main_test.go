@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -174,6 +175,67 @@ func TestRunKeepsLogoStaticOutsideInteractiveAnimation(t *testing.T) {
 // installer command never emits animation control bytes, whether the command
 // succeeds (list on an empty backup root) or fails fast on invalid usage
 // (restore/install without arguments touch no managed path either way).
+func TestRunMenuRequiresTTYAndPreservesLogoOverrides(t *testing.T) {
+	cfg, root := restoreFixture(t)
+	environment := commandEnvironment(cfg)
+	calls := 0
+	menu := func(_ context.Context, _ io.Writer, _, _ bool, _ map[string]string, _ string) error {
+		calls++
+		return nil
+	}
+
+	var output, errorOutput bytes.Buffer
+	err := runWithMenu(context.Background(), []string{"menu"}, &output, &errorOutput, false, false, environment, root, menu)
+	if err == nil || !strings.Contains(err.Error(), "menu requires an interactive terminal") {
+		t.Fatalf("headless menu error = %v, want TTY-only error", err)
+	}
+	if calls != 0 || output.Len() != 0 || errorOutput.Len() != 0 {
+		t.Fatalf("headless menu touched output or runner: calls=%d stdout=%q stderr=%q", calls, output.String(), errorOutput.String())
+	}
+
+	for _, test := range []struct {
+		name   string
+		args   []string
+		color  bool
+		static bool
+	}{
+		{name: "explicit menu with NO_COLOR", args: []string{"menu"}, color: true},
+		{name: "explicit menu static", args: []string{"--static", "menu"}, static: true},
+		{name: "implicit terminal menu", args: nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			called := false
+			runner := func(_ context.Context, _ io.Writer, noColor, static bool, _ map[string]string, _ string) error {
+				called = true
+				if noColor != test.color || static != test.static {
+					t.Errorf("menu settings = noColor %t static %t, want %t %t", noColor, static, test.color, test.static)
+				}
+				return nil
+			}
+			var out, errOut bytes.Buffer
+			if err := runWithMenu(context.Background(), test.args, &out, &errOut, true, test.color, environment, root, runner); err != nil {
+				t.Fatalf("runWithMenu() error = %v", err)
+			}
+			if !called || out.Len() != 0 || errOut.Len() != 0 {
+				t.Fatalf("menu runner result: called=%t stdout=%q stderr=%q", called, out.String(), errOut.String())
+			}
+		})
+	}
+
+	for _, args := range [][]string{{"--static"}, nil} {
+		var out, errOut bytes.Buffer
+		if err := runWithMenu(context.Background(), args, &out, &errOut, true, true, environment, root, menu); err != nil {
+			t.Fatalf("NO_COLOR logo run() error = %v", err)
+		}
+		if out.String() != word+"\n" {
+			t.Errorf("NO_COLOR no-argument output = %q, want plain logo", out.String())
+		}
+	}
+	if calls != 0 {
+		t.Errorf("logo compatibility path invoked menu %d times", calls)
+	}
+}
+
 func TestRunDoesNotAnimateInstallerCommands(t *testing.T) {
 	tests := []struct {
 		name      string
