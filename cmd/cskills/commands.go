@@ -255,15 +255,29 @@ var errInstallAlreadyUpToDate = errors.New("skill pack already up to date")
 // the installed-state write (install-skills.sh:1413-1414, 1489), instead of
 // acquiring the lock a second time.
 func runInstall(cfg Configuration, force bool, environment map[string]string, out io.Writer) error {
-	ctx := context.Background()
+	return runInstallWithProgress(context.Background(), cfg, force, environment, out, nil)
+}
+
+func runInstallWithProgress(ctx context.Context, cfg Configuration, force bool, environment map[string]string, out io.Writer, progress func(installEvent)) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	atomic := false
+	emit := func(phase string) {
+		if progress != nil {
+			progress(installEvent{Phase: phase, Atomic: atomic})
+		}
+	}
 	var sourceCommit string
 	var skillCount int
 
 	prepare := func() ([]stagedTarget, string, func(), error) {
+		emit("clone")
 		skillsDir, commit, cleanup, err := cloneSkillSource(ctx, cfg, environment)
 		if err != nil {
 			return nil, "", nil, err
 		}
+		emit("validate")
 		count, err := ValidateSkillTree(skillsDir, cfg.MinimumSkillCount, 0)
 		if err != nil {
 			cleanup()
@@ -277,6 +291,7 @@ func runInstall(cfg Configuration, force bool, environment map[string]string, ou
 			fmt.Fprintln(out, "Force reinstall requested; proceeding regardless of the currently installed version.")
 		}
 
+		emit("comparison")
 		installedState, stateErr := ResolveInstalledState(cfg.StatePath, cfg.BackupRoot)
 		sameVersion := stateErr == nil &&
 			installedState.SourceCommit == commit &&
@@ -312,12 +327,22 @@ func runInstall(cfg Configuration, force bool, environment map[string]string, ou
 			}
 		}
 
+		if err := ctx.Err(); err != nil {
+			cleanup()
+			return nil, "", nil, err
+		}
 		for _, target := range []string{cfg.OpenCodeTarget, cfg.ClaudeTarget, cfg.AgyTarget, cfg.AgentsTarget} {
 			if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 				cleanup()
 				return nil, "", nil, fmt.Errorf("create target parent directory: %w", err)
 			}
 		}
+		if err := ctx.Err(); err != nil {
+			cleanup()
+			return nil, "", nil, err
+		}
+		atomic = true
+		emit("atomic")
 
 		replacements := []stagedTarget{
 			{Target: cfg.OpenCodeTarget, StagedPath: skillsDir},
@@ -342,7 +367,7 @@ func runInstall(cfg Configuration, force bool, environment map[string]string, ou
 		return nil
 	}
 
-	snapshotID, err := runTransactionWithPreparation(cfg, nil, "install", "unknown", transactionHooks{}, prepare, postCommit)
+	snapshotID, err := runTransactionWithPreparation(cfg, nil, "install", "unknown", transactionHooks{progress: emit}, prepare, postCommit)
 	if err != nil {
 		if errors.Is(err, errInstallAlreadyUpToDate) {
 			fmt.Fprintf(out, "Already up to date: version %s is installed in all targets.\n", sourceCommit)

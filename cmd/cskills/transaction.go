@@ -20,6 +20,7 @@ type stagedTarget struct {
 type transactionHooks struct {
 	failAt           string
 	removeQuarantine func(string) error
+	progress         func(string)
 }
 
 // runTransaction replaces exactly the three destinations in cfg. It is an
@@ -67,6 +68,9 @@ func runTransactionWithPreparation(cfg Configuration, replacements []stagedTarge
 		return "", err
 	}
 	defer lock.Close()
+	if hooks.progress != nil {
+		hooks.progress("lock")
+	}
 
 	if prepare != nil {
 		var cleanup func()
@@ -85,6 +89,9 @@ func runTransactionWithPreparation(cfg Configuration, replacements []stagedTarge
 		return "", err
 	}
 
+	if hooks.progress != nil {
+		hooks.progress("snapshot")
+	}
 	id, err := createSnapshot(cfg, snapshotReason, sourceCommit, snapshotCreateHooks{})
 	if err != nil {
 		return "", fmt.Errorf("create transaction recovery snapshot: %w", err)
@@ -111,6 +118,9 @@ func runTransactionWithPreparation(cfg Configuration, replacements []stagedTarge
 	}
 	defer func() { _ = cleanupStages() }()
 
+	if hooks.progress != nil {
+		hooks.progress("staging")
+	}
 	for i, replacement := range replacements {
 		states[i].path = replacement.Target
 		if replacement.Preserve || replacement.StagedPath == "" {
@@ -187,6 +197,9 @@ func runTransactionWithPreparation(cfg Configuration, replacements []stagedTarge
 		return id, cause
 	}
 
+	if hooks.progress != nil {
+		hooks.progress("apply")
+	}
 	for i := range states {
 		state := &states[i]
 		if replacements[i].Preserve {
@@ -217,6 +230,9 @@ func runTransactionWithPreparation(cfg Configuration, replacements []stagedTarge
 			return rollback(err)
 		}
 	}
+	if hooks.progress != nil {
+		hooks.progress("verify")
+	}
 	for i, replacement := range replacements {
 		if replacement.Preserve {
 			continue
@@ -227,6 +243,9 @@ func runTransactionWithPreparation(cfg Configuration, replacements []stagedTarge
 	}
 	if err := transactionFail(hooks, "before-commit"); err != nil {
 		return rollback(err)
+	}
+	if hooks.progress != nil {
+		hooks.progress("cleanup")
 	}
 
 	var cleanupErr error
@@ -254,6 +273,9 @@ func runTransactionWithPreparation(cfg Configuration, replacements []stagedTarge
 		return id, fmt.Errorf("transaction committed; recovery snapshot %s retained: %w", id, cleanupErr)
 	}
 	if postCommit != nil {
+		if hooks.progress != nil {
+			hooks.progress("state")
+		}
 		if err := postCommit(sourceCommit, id); err != nil {
 			return id, err
 		}
@@ -332,8 +354,13 @@ func validateTransactionInputs(cfg Configuration, replacements []stagedTarget) e
 			return fmt.Errorf("configured transaction paths overlap")
 		}
 		parentInfo, err := os.Lstat(filepath.Dir(target))
-		if err != nil || !parentInfo.IsDir() || parentInfo.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("target parent is missing or unsafe: %s", filepath.Dir(target))
+		// Preparation validates preserve-only placeholders before it creates
+		// missing parents under the lock. Actual replacements still require
+		// existing safe parents when revalidated after preparation.
+		if !(replacements[i].Preserve && os.IsNotExist(err)) {
+			if err != nil || !parentInfo.IsDir() || parentInfo.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("target parent is missing or unsafe: %s", filepath.Dir(target))
+			}
 		}
 		if replacements[i].Target != target {
 			return fmt.Errorf("replacement %d does not match its configured target", i)
