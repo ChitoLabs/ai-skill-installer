@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/mattn/go-isatty"
 )
 
 const (
@@ -24,18 +26,14 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	info, err := os.Stdout.Stat()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, fmt.Errorf("check terminal: %w", err))
-		os.Exit(1)
-	}
 	_, noColor := os.LookupEnv("NO_COLOR")
 	scriptDir, err := scriptDirectory()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr, info.Mode()&os.ModeCharDevice != 0, noColor, environFromOS(), scriptDir); err != nil {
+	isTerminal := isatty.IsTerminal(os.Stdin.Fd()) && isatty.IsTerminal(os.Stdout.Fd())
+	if err := run(ctx, os.Args[1:], os.Stdout, os.Stderr, isTerminal, noColor, environFromOS(), scriptDir); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -73,6 +71,10 @@ func environFromOS() map[string]string {
 }
 
 func run(ctx context.Context, args []string, out, errOut io.Writer, isTerminal, noColor bool, environment map[string]string, scriptDir string) error {
+	return runWithMenu(ctx, args, out, errOut, isTerminal, noColor, environment, scriptDir, runInteractiveMenu)
+}
+
+func runWithMenu(ctx context.Context, args []string, out, errOut io.Writer, isTerminal, noColor bool, environment map[string]string, scriptDir string, menuRunner func(context.Context, io.Writer, bool, bool, map[string]string, string) error) error {
 	flags := flag.NewFlagSet("cskill", flag.ContinueOnError)
 	flags.SetOutput(errOut)
 	static := flags.Bool("static", false, "print the logo without animation or color")
@@ -87,7 +89,17 @@ func run(ctx context.Context, args []string, out, errOut io.Writer, isTerminal, 
 		printHelp(out)
 		return nil
 	}
-	if err := dispatchCommand(flags.Args(), out, errOut, environment, scriptDir); err != nil {
+	commands := flags.Args()
+	if len(commands) == 1 && commands[0] == "menu" {
+		if !isTerminal {
+			return fmt.Errorf("menu requires an interactive terminal")
+		}
+		return menuRunner(ctx, out, noColor, *static, environment, scriptDir)
+	}
+	if len(commands) == 0 && isTerminal && !noColor && !*static {
+		return menuRunner(ctx, out, false, false, environment, scriptDir)
+	}
+	if err := dispatchCommand(commands, out, errOut, environment, scriptDir); err != nil {
 		return err
 	}
 	if len(flags.Args()) > 0 {
@@ -140,21 +152,26 @@ func dispatchCommand(args []string, out, errOut io.Writer, environment map[strin
 func printHelp(out io.Writer) {
 	fmt.Fprint(out, `Usage: cskill [--static] [command]
 
-With no command, print the C-Skills logo. Animation is shown only on a terminal
-when NO_COLOR is unset and --static is not specified.
+With no command, open the interactive menu on a terminal; otherwise print the
+C-Skills logo. The menu requires a terminal. --static and NO_COLOR preserve the
+plain no-argument logo behavior.
 
 Commands:
+  menu                Open the interactive installer menu (terminal required)
   help                Show this help
   status              Compare the installed skill-pack version against the
                        configured remote branch
   list                List managed backup snapshots
   install [--force]   Clone, validate, and install the configured skill pack
-                       into the OpenCode, Claude, and AGY targets
+                       into the OpenCode, Claude, AGY, and Agents targets
   restore BACKUP_ID   Restore a managed snapshot by ID (required; there is no
                        interactive picker)
 
-install and restore always require an explicit command and argument; no
-command ever performs a mutation implicitly, including with no arguments.
+The menu never installs on entry. It shows all four resolved targets and
+requires explicit confirmation before replacement.
+install and restore always require an explicit command and argument; no command
+ever performs a mutation implicitly, including opening/cancelling the menu or
+with no arguments.
 `)
 }
 

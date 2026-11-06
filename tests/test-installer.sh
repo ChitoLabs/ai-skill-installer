@@ -1031,7 +1031,9 @@ test_install_refuses_held_lock() {
 
   prepare_original_target "$opencode_target" "original-opencode"
   prepare_original_target "$claude_target" "original-claude"
-  exec {lock_fd}>"$lock_path"
+  printf 'preserve lock-linked data\n' >"$fixture/lock-linked-data.txt"
+  ln -- "$fixture/lock-linked-data.txt" "$lock_path"
+  exec {lock_fd}<>"$lock_path"
   flock -n "$lock_fd" || fail "Could not acquire test lock"
 
   if output="$(run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" install 2>&1)"; then
@@ -1044,6 +1046,8 @@ test_install_refuses_held_lock() {
   assert_file "$opencode_target/stale-file.txt"
   assert_file "$claude_target/stale-file.txt"
   assert_absent "$backup_root"
+  [[ "$(<"$fixture/lock-linked-data.txt")" == 'preserve lock-linked data' ]] || \
+    fail "Install truncated data through a hardlinked lock"
 }
 
 test_restore_refuses_held_lock() {
@@ -1063,7 +1067,10 @@ test_restore_refuses_held_lock() {
   selected_id="$(only_snapshot_id "$backup_root")"
   printf 'retain\n' >"$opencode_target/current-file.txt"
   printf 'retain\n' >"$claude_target/current-file.txt"
-  exec {lock_fd}>"$lock_path"
+  printf 'preserve lock-linked data\n' >"$fixture/lock-linked-data.txt"
+  ln -- "$fixture/lock-linked-data.txt" "$fixture/lock-alias"
+  mv -- "$fixture/lock-alias" "$lock_path"
+  exec {lock_fd}<>"$lock_path"
   flock -n "$lock_fd" || fail "Could not acquire test lock"
 
   if output="$(run_installer "$repository" "$opencode_target" "$claude_target" "$backup_root" restore "$selected_id" 2>&1)"; then
@@ -1078,6 +1085,8 @@ test_restore_refuses_held_lock() {
   assert_file "$opencode_target/current-file.txt"
   assert_file "$claude_target/current-file.txt"
   assert_snapshot_count "$backup_root" 1
+  [[ "$(<"$fixture/lock-linked-data.txt")" == 'preserve lock-linked data' ]] || \
+    fail "Restore truncated data through a hardlinked lock"
 }
 
 test_rejects_lock_path_inside_codegraph() {

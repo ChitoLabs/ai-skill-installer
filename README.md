@@ -22,7 +22,7 @@ cd ai-skill-installer
 ./install-skills.sh install
 ```
 
-> **Prefer Go?** A native Linux terminal executable, `cskill`, is included. Compile it with `go build -o cskill ./cmd/cskills` and run `./cskill install`. Both implementations share identical snapshot and state formats.
+> **Prefer Go?** A native Linux terminal executable, `cskill`, is included. Compile it with `go build -o cskill ./cmd/cskills` and run `./cskill` in a terminal for the interactive menu, or `./cskill install` for a script-friendly installation. Both implementations share identical snapshot and state formats.
 
 ---
 
@@ -43,17 +43,34 @@ The installer automatically targets the standard skills directories for all supp
 
 ## Commands & Usage
 
-Both `install-skills.sh` and the `cskill` Go binary provide the same core commands:
+Both `install-skills.sh` and the `cskill` Go binary provide transactional installation and restore. Interactive entry points and preview support differ:
 
 | Action | Bash (`./install-skills.sh`) | Go (`./cskill`) | Mutates Targets? | Creates Snapshot? | Description |
 |---|---|---|:---:|:---:|---|
-| **Preview** | `dry-run` | `dry-run` | No | No | Shallow-clones and validates source skills without touching targets or backups. |
+| **Preview** | `dry-run` | Not implemented | No | No | Bash shallow-clones and validates source skills without touching targets or backups. |
 | **Install / Update** | `install` | `install` | Yes* | Yes* | Updates all four targets transactionally. Skips if already up to date (*no-op). |
 | **Force Reinstall** | `install --force` | `install --force` | Yes | Yes | Forces complete re-installation and creates a new snapshot even if unchanged. |
 | **Check Version** | `status` (or `check`) | `status` | No | No | Compares installed commit against remote HEAD and summarizes `+new / ~modified / -removed` skills. Warns on manual drift. |
 | **List Backups** | `list` | `list` | No | No | Lists managed snapshots in chronological order with target and skill counts. |
 | **Restore** | `restore <ID>` | `restore <ID>` | Yes | Yes | Restores a selected snapshot atomically, creating a pre-restore safety snapshot first. |
-| **Interactive Menu** | `menu` (or no args on TTY) | *(Terminal logo)* | Depends | Depends | TTY-only interactive prompt. Headless/SSH runs require explicit commands. |
+| **Interactive Menu** | `menu` (or no args on TTY) | `menu` (or no args on TTY) | After confirmation | On install | Go offers install/update, status, backup listing, and exit. Interactive restore remains Bash-only. |
+
+---
+
+## Interactive Go installer
+
+```bash
+go build -o cskill ./cmd/cskills
+./cskill menu
+```
+
+The menu requires terminal input and output. Use the arrow keys (or `j`/`k`) and Enter to choose an action. Selecting **Install / update** first shows all four target paths and warns that their contents will be replaced; installation starts only after explicit confirmation. Opening or leaving the menu does not install anything.
+
+During installation, animated stage indicators track actual work rather than estimated percentages. Errors and the final installation report remain visible in the interface. `Ctrl+C` requests cancellation: preparation can stop, but once the transactional phase starts, the interface waits for the engine to finish safely before returning control.
+
+For plain interactive output, use `NO_COLOR=1 ./cskill menu`; use `./cskill --static menu` to disable animation. Without arguments, `NO_COLOR` or `--static` retains the plain logo instead of opening the menu. Redirected/nonterminal no-argument output also remains the plain logo. Explicit commands such as `./cskill install`, `./cskill status`, and `./cskill restore <ID>` stay noninteractive and do not animate.
+
+> **Scope:** the Go menu lists backups, but does not yet include a restore picker or a `dry-run` command. Use `./cskill restore <ID>` for restore and `./install-skills.sh dry-run` for preview. Keep Bash available as an alternative.
 
 ---
 
@@ -155,6 +172,10 @@ go test -count=1 ./...
 
 # Run the Bash suite (58 isolated end-to-end cases)
 bash tests/test-installer.sh
+
+# Exercise the Go menu through a real isolated pseudo-terminal (Linux/Python 3)
+go build -o cskill ./cmd/cskills
+python3 tests/test-tui.py ./cskill
 ```
 
 ---
