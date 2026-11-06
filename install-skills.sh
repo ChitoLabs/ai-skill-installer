@@ -473,7 +473,8 @@ acquire_installer_lock() {
   command -v flock >/dev/null 2>&1 || fail "Required command not found for install/restore: flock"
   mkdir -p -- "$lock_parent"
   [[ ! -L "$LOCK_PATH" ]] || fail "Installer lock path became a symbolic link: $LOCK_PATH"
-  exec {LOCK_FD}>"$LOCK_PATH" || fail "Could not open installer lock: $LOCK_PATH"
+  # Open without truncating: the lock may alias another file through a hardlink.
+  exec {LOCK_FD}>>"$LOCK_PATH" || fail "Could not open installer lock: $LOCK_PATH"
   flock --exclusive --nonblock "$LOCK_FD" || \
     fail "Another install or restore operation is already running (lock: $LOCK_PATH)"
 }
